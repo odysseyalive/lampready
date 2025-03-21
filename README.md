@@ -4,9 +4,9 @@ Why LAMPready?
 A LAMP is an acronym describing a Web server that runs on a Linux platform with
 [Apache](https://httpd.apache.org/), [MariaDB](https://www.mariadb.org/) and
 [PHP](https://www.php.net/).  Web pages with [Python](https://www.python.org/)
-and [Perl](https://www.perl.org/) can also be served under this environment. 
+and [Perl](https://www.perl.org/) can also be served under this environment.
 References to a LAMP stack generally relate to an environment where website
-code can be tested prior to professional deployment. 
+code can be tested prior to professional deployment.
 
 There are a lot of great LAMP packages out there.  However, I wanted something
 I could spin up fast without a lot of manual intervention.  Each website is
@@ -15,7 +15,7 @@ different from an actual working Web server.
 
 As a general warning though, this environment is ***only intended*** to be used
 for debugging code.  If anything, most LAMP stacks are way oversimplified and
-are in no way ready for production. 
+are in no way ready for production.
 
 How it Works
 ---
@@ -39,6 +39,7 @@ this script will demystify the process.
 
 The Ubuntu Box
 ---
+
 In this example Podman will download the
 [ubuntu/bind9](https://hub.docker.com/r/ubuntu/bind9) image.  This is an init
 image running the 20.04 release of [Ubuntu LTS](https://ubuntu.com/download/server).
@@ -52,6 +53,7 @@ command from root:
 ```
 sysctl -w vm.max_map_count=262144
 ```
+
 This increases the mmap counts in mappfs.  To make this change permanant add the
 following line to the bottom of the /etc/sysctl.conf file and reboot.
 
@@ -61,7 +63,8 @@ vm.max_map_count=262144
 
 Being Rootless
 ---
-LAMPReady is a rootless container. As such, there are standard practices to 
+
+LAMPReady is a rootless container. As such, there are standard practices to
 setting up a web server that have been broken simply for the sake of
 productivity.  This was done to simplify the permissions issues that arise
 when working with shared data within the container.
@@ -72,25 +75,27 @@ ports.  Run the following commands under root to do that:
 ```
 echo "net.ipv4.ip_unprivileged_port_start=0" > /etc/sysctl.d/05-expose-privileged.conf
 ```
+
 ```
 sysctl --system
 ```
+
 ```
 sysctl net.ipv4.ip_unprivileged_port_start=0
 ```
 
 How to Use Lampready
 ---
-Download the box script into your project's root directory.  A pretty rough
-video demonstration can be seen
-[here](https://bridgesense.com/blog/making-friends-with-podman).
+
+Download the box script into your project's root directory.
 
 Ubuntu LTS
+
 ```
-curl https://raw.githubusercontent.com/bridgesense/lampready/master/ubuntu-box > box
+curl https://raw.githubusercontent.com/odysseyalive/lampready/master/ubuntu-box > box
 ```
 
-__PLEASE NOTE:__ Be sure to review the notes at the head of the box script.
+**PLEASE NOTE:** Be sure to review the notes at the head of the box script.
 Xdebug is disabled by default. This box is designed to run container processes
 with root permission -- which includes Apache!  Less than optimal, right?!
 
@@ -103,7 +108,7 @@ exposed when enabling it.***
 
 As you will notice further on, this script's commands closely model
 [Vagrant](https://www.vagrantup.com/).  The advantage of running a container
-this way is that I no longer need to maintain a fully encapsulated 
+this way is that I no longer need to maintain a fully encapsulated
 operating system image on an existing database. This bodes well with
 keeping better abreast with the latest release changes.
 
@@ -125,17 +130,18 @@ bash box up
 bash box ssh
 ```
 
-* Access the website via https://127.0.0.1 or use your custom domain
+* Access the website via <https://127.0.0.1> or use your custom domain
 settings (see below)
 
 * Access outbound mail using the following command:
+
 ```
 bash box mail 
 ```
 
-
 How to Configure this Script for Your Project
 ---
+
 The very first time you run the ***bash box up*** command, the hostname and
 ***user defined settings*** will be used to set up Apache, Xdebug, the SSL
 certificate, mail relay and any databases without further intervention.
@@ -143,7 +149,7 @@ certificate, mail relay and any databases without further intervention.
 Here is a breakdown of the available options:
 
 **HOSTNAME:**
-The hostname should contain your domain name. 
+The hostname should contain your domain name.
 
 **SUB_DOMAIN:**
 It is recommended that you choose a unique sub domain for your virtual machine.
@@ -151,6 +157,7 @@ This way your public domain is active for comparison.  Next, alter your system's
 hosts file to allow the new domain to be accessed from any of your browsers.  On
 Linux systems, this host file can be found at /etc/hosts.  You'll need root
 access to add the following line or something similar:
+
 ```
 127.0.0.1   dev.lampready.com
 ```
@@ -161,6 +168,7 @@ root directory contains an index file, you'll need to leave this setting blank.
 Otherwise, you'll include the local path to your index file.
 
 The example default entry in this script assumes the following directory structure:
+
 ```
 box
 user_database.sql
@@ -171,6 +179,7 @@ In another example, let's say a Magento store resides within a subdirectory of
 an existing website, you might change the root path to "public_html/store"
 if the store is registered under a different domain.  Let's assume your directory
 structure is as follows
+
 ```
 box
 user_database.sql
@@ -185,12 +194,10 @@ However, you'll notice a new hidden directory formed in your project root
 directory  You can add more URLS by adding the appropriate Apache configuration
 files to: .container/conf.d
 
-
 **HTTP_PORT:**
 This port generally defaults to 80.  If you have root access, you are
 encouraged to use this port for full compatibility of the code that
 is now running in a virtual environment.
-
 
 **SSL_PORT:**
 This port defaults to 443, but may be changed.  Remember though, if the
@@ -201,21 +208,17 @@ into the browser:
 https://dev.lampready.com:443
 ```
 
-
 **TIMEZONE**
-Set the timezone for Apache using one of 
+Set the timezone for Apache using one of
 [these options](https://www.php.net/manual/en/timezones.php).
 
-
 **PHP_VERSION:**
-This option is intended to provide easier debugging during PHP upgrades.  Any 
+This option is intended to provide easier debugging during PHP upgrades.  Any
 PHP version in the [Remi repository](https://rpms.remirepo.net/) repository
 is fair game.  Most versions have access to the commonly used set of PHP modules.
 
-
 **PHP_MAX_EXEC_TIME:**
 This is the maximum execution time a PHP script runs before it times out.
-
 
 **PHP_MEM_LIMIT:**
 This is the maximum amount of memory a single PHP script can use.  Remember,
@@ -224,21 +227,21 @@ memory is not reserved, only used during the course of the Web server's
 operations.  This makes for a more efficient environment for testing
 scripts.
 
-
 **XDEBUG_ENABLE:**
 Xdebug is not enabled by default. Xdebug must be enabled before the initial
 setup process begins.  If Xdebug is not enabled during the first initialization
 of the LAMP stack, it will have to be destroyed and recreated.
-
 
 **XDEBUG_PORT:**
 This is the default port normally allocated for Xdebug.  You'll want to be sure
 to open up your firewall to allow communication between Xdebug and your IDE.
 Think about the following changes that will need to be made with the root user
 in order for Xdebug to function:
+
 ```
 firewall-cmd --permanent --zone=webserver --add-port=9003/tcp
 ```
+
 ```
 semanage port -a -t http_port -p tcp 9003
 ```
@@ -248,17 +251,14 @@ For sites constructed from many packages with different settings, it is nice to
 to easily override error suppression.  Set this option to 1 to override individual
 error settings throughout the code.
 
-
 **XDEBUG_SCREAM:**
 This is another setting that can help ensure all PHP errors are described
 in the browser.
-
 
 **DB1:**
 The script can automatically set up and install any number of MySQL databases.
 By filling out this information, the script will create the database and inject
 your data from a sql file you have placed in the project's root directory.
-
 
 **DB_NAME, DB_USER and DB_PASS:**
 These settings should mirror the same database name and user credentials
@@ -267,15 +267,12 @@ written in the website's database configuration file.
 ***Notice the single quotes used for the password.***  This is an important
 work-around to allow the bash script to insert certain special characters correctly.
 
-
 **DB_PERM:**
 Specific DB permissions may be applied.
-
 
 **DB_PREFIX:**
 If there are any prefixes associated with your database as commonly is the case
 with Wordpress, this should be entered here.  An example would be: wp_
-
 
 **DB_TYPE:**
 If the database is Magento or Wordpress, you will want to set this option to say
@@ -284,51 +281,55 @@ magento_2.  The script will update the appropriate tables to match this
 script's HOSTNAME and SUB_DOMAIN settings.  For typical installations no manual
 fiddling should be necessary.
 
-
 **DB_FILENAME:**
 This option is not neccessary if there is no database to import.  While the
 DB_NAME option will create an empty database, this option populates that
 database.  The script will look for the sql file in the same directory as
 the script resides.
 
-
 **DB_CUSTOM_FUNCTIONS:**
 This option is generally reserved for importing custom database functions.
 
-
 How to Use this Box?
 ---
+
 After installing, LAMPready must be started and managed from the terminal:
 
 **to initialize or start the server:**
+
 ```
 bash box up
 ```
 
 **stop the server:**
+
 ```
 bash box halt
 ```
 
 **delete the server:**
+
 ```
 bash box destroy
 ```
+
 **Note:** If you run bash box destroy, the box will be built from scratch again
 -- which may be a good thing.
 
-
 **to shell into the server:**
+
 ```
 bash box ssh
 ```
 
 **check if you are running any other LAMPReady instances:**
+
 ```
 bash box ps 
 ```
 
 **to destroy all LAMPReady installations:**
+
 ```
 bash box reset 
 ```
@@ -338,14 +339,14 @@ Dap-Mode for Emacs
 
 Dap-Mode is part of the [Emacs-Lsp](https://emacs-lsp.github.io/) package which
 is a very awesome PHP IDE!  The website is running from a rootless container and
-therefore needs the correct path mapping to the project's root directory.  This 
+therefore needs the correct path mapping to the project's root directory.  This
 would include the path within the container as well as the directory on your
 machine. There are some excellent notes on
 [Spacemac's implementation](https://develop.spacemacs.org/layers/+lang/php/README.html#backends)
 
 DAP-Mode actually uses the PHP VSCode plugin
 [vscode-php-debug](https://github.com/xdebug/vscode-php-debug) which can be
-installed with: M-x dap-php-setup 
+installed with: M-x dap-php-setup
 
 You'll also want to create a file called launch.json in your project's root
 directory and place the following information in it:
@@ -371,18 +372,18 @@ directory and place the following information in it:
 
 After running dap-php-setup, you should have a new option called "Use custom
 launch.json script" to choose.  For more information and an example Emacs
-setup, check out my [dotfiles](https://github.com/bridgesense/dotfiles).
+setup, check out my [dotfiles](https://github.com/odysseyalive/dotfiles).
 
-Dap-Mode for NeoVIM 
+Dap-Mode for NeoVIM
 ---
 
 Dap-Mode for NeoVIM is even better than VSCode's implementation, and I have
 found it much more stable than the Emacs version.
 
-I used [mason.vim](https://github.com/williamboman/mason.nvim) to add the 
+I used [mason.vim](https://github.com/williamboman/mason.nvim) to add the
 vscode-php-debug extension, which never seems to load using the Emacs alternative.
-Afterwards, all I needed to do was add a few lines of code to my [Nvim init file](https://github.com/bridgesense/dotfiles/blob/master/workstation/nvim/init.lua).
-The same configuration used above for Emacs will work, but it should be placed into 
+Afterwards, all I needed to do was add a few lines of code to my [Nvim init file](https://github.com/odysseyalive/dotfiles/blob/master/workstation/nvim/init.lua).
+The same configuration used above for Emacs will work, but it should be placed into
 a subdirectory of your root folder: ~/your-project-root/.vscode/launch.json.
 
 VIM with the Vdebug Plugin
