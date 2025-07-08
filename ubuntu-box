@@ -39,7 +39,7 @@ SSL_PORT="443"
 
 TIMEZONE="America/Los_Angeles"
 
-PHP_VERSION="8.1" # 5.6 - 8.1
+PHP_VERSION="8.3" # 7.4, 8.0 or 8.3
 PHP_MAX_EXEC_TIME="600"
 PHP_MEM_LIMIT="512M"
 
@@ -70,7 +70,7 @@ declare -A DB1=(
 ## # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Don't edit below this point unless you really want to
 # ref: https://hub.docker.com/r/jrei/systemd-ubuntu
-IMAGE="docker.io/jrei/systemd-ubuntu:20.04"
+IMAGE="docker.io/jrei/systemd-ubuntu:24.04"
 
 SITE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ACTION="${1:-help}"
@@ -237,7 +237,7 @@ function build_image {
   # php
   _php="php${PHP_VERSION} php${PHP_VERSION}-bz2 php${PHP_VERSION}-curl \
           php${PHP_VERSION}-gd php${PHP_VERSION}-intl php${PHP_VERSION}-mbstring \
-          php${PHP_VERSION}-mcrypt php${PHP_VERSION}-pspell php${PHP_VERSION}-xml \
+          php${PHP_VERSION}-pspell php${PHP_VERSION}-xml \
           php${PHP_VERSION}-zip php${PHP_VERSION}-imap php${PHP_VERSION}-imagick \
           php${PHP_VERSION}-mysqlnd php${PHP_VERSION}-soap php${PHP_VERSION}-dev \
           php${PHP_VERSION}-memcached php${PHP_VERSION}-xdebug php${PHP_VERSION}-bcmath \
@@ -311,13 +311,12 @@ function build_image {
   fi
 
   # apache override
-  echo "RUN wget http://github.com/bridgesense/lampready/raw/master/apache2-bin_2.4.41-4ubuntu3.13_amd64.deb -O /usr/local/share/apache2-override.deb" >>$_file
+  echo "RUN wget http://github.com/bridgesense/lampready/raw/master/apache2-bin_2.4.58-1ubuntu8.6_amd64.deb -O /usr/local/share/apache2-override.deb" >>$_file
   echo "RUN sleep 2" >>$_file
   echo "RUN dpkg -i /usr/local/share/apache2-override.deb" >>$_file
 
   # set server time
   echo "RUN ln -fs /usr/share/zoneinfo/${TIMEZONE} /etc/localtime" >>$_file
-  #echo "RUN dpkg-reconfigure -f noninteractive tzdata" >>$_file
 
   podman build -t "${SITE_NAME}:private" -f $_file
 }
