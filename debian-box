@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Home: https://github.com/bridgesense/lampready
-# This script creates a LAMP stack with a single ubuntu focal container.
+# This script creates a LAMP stack with a single debian bookworm container.
 # Customize the information below to suit your needs,
 # then run: bash box
 #
@@ -39,7 +39,7 @@ SSL_PORT="443"
 
 TIMEZONE="America/Los_Angeles"
 
-PHP_VERSION="8.3" # 7.4, 8.0 or 8.3
+PHP_VERSION="8.3" # 7.4, 8.0, 8.1, 8.2, or 8.3
 PHP_MAX_EXEC_TIME="600"
 PHP_MEM_LIMIT="512M"
 
@@ -69,8 +69,8 @@ declare -A DB1=(
 
 ## # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Don't edit below this point unless you really want to
-# ref: https://hub.docker.com/r/jrei/systemd-ubuntu
-IMAGE="docker.io/jrei/systemd-ubuntu:24.04"
+# ref: https://hub.docker.com/r/jrei/systemd-debian
+IMAGE="docker.io/jrei/systemd-debian:12"
 
 SITE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ACTION="${1:-help}"
@@ -87,6 +87,11 @@ if command -v podman >/dev/null 2>&1; then
     MARIADB_FIX="mysqld"
   fi
 fi
+
+# CUSTOM APACHE BUILD OPTION
+# Set to "1" to build Apache with BIG_SECURITY_HOLE flag (removes root warnings)
+# Set to "0" to use standard Apache configured to run as root (not recommended)
+CUSTOM_APACHE_BUILD="1"
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # functions
@@ -182,8 +187,7 @@ function build_image {
   fi
 
   # tools
-  # _tools="make crontabs cronie iputils net-tools git unzip xz elasticsearch"
-  _tools="vim dialog apt-utils dumb-init git curl wget software-properties-common mutt"
+  _tools="vim dialog apt-utils dumb-init git curl wget software-properties-common mutt lsb-release ca-certificates gnupg"
 
   # modules
   _modules="nodejs python3 python3-pip ruby"
@@ -194,54 +198,82 @@ function build_image {
 		"
 
   # composer
-  _composer="curl https://getcomposer.org/composer-stable.phar >> /usr/local/bin/composer; \
+  _composer="curl https://getcomposer.org/composer-stable.phar -o /usr/local/bin/composer; \
         chmod +x /usr/local/bin/composer; \
         echo \"alias composer='env COMPOSER_ALLOW_SUPERUSER=1 composer'\" >> /root/.bashrc; \
         "
 
   # apache
-  _apache="apache2 openssl"
+  _apache="apache2 openssl ssl-cert"
 
-  # Apache config
+  # Apache config (standard - runs as root)
   _apache_config="a2enmod ssl rewrite headers; \
         sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf; \
         sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=root@g\" /etc/apache2/envvars; \
         sed -i \"s@export APACHE_RUN_GROUP.*@export APACHE_RUN_GROUP=root@g\" /etc/apache2/envvars; \
         "
 
-  # openssl
-  _openssl="openssl req -newkey rsa:2048 -x509 -sha256 -days 999999 \
-        -nodes -subj '/C=US/ST=Oregon/L=Portland/O=DevTeam/CN=${SITE_NAME}' \
-        -out /etc/ssl/certs/ssl-cert-snakeoil.pem -keyout /etc/ssl/private/ssl-cert-snakeoil.key; \
+  # Custom Apache build with BIG_SECURITY_HOLE flag (optional)
+  _custom_apache_build="echo 'deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm main' >> /etc/apt/sources.list.d/sources.list && \
+        echo 'deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian-security bookworm-security main' >> /etc/apt/sources.list.d/sources.list && \
+        echo 'deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm-updates main' >> /etc/apt/sources.list.d/sources.list && \
+        apt-get update && \
+        apt-get build-dep -y apache2 && \
+        apt-get install -y fakeroot && \
+        cd /root && \
+        apt source apache2 && \
+        cd apache2-* && \
+        sed -i 's/AP2_CFLAGS = -pipe \\\$(CFLAGS)/AP2_CFLAGS = -pipe \\\$(CFLAGS) -DBIG_SECURITY_HOLE/' debian/rules && \
+        dpkg-buildpackage -rfakeroot -uc -b && \
+        cd .. && \
+        dpkg -i apache2-bin_*.deb && \
+        apt-mark hold apache2-bin && \
+        rm -f /etc/apt/sources.list.d/sources.list && \
+        apt-get update && \
+        rm -rf /root/apache2-* && \
+        a2enmod ssl rewrite headers && \
+        sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf && \
+        sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=root@g\" /etc/apache2/envvars && \
+        sed -i \"s@export APACHE_RUN_GROUP.*@export APACHE_RUN_GROUP=root@g\" /etc/apache2/envvars;"
+
+  # openssl - generate self-signed certificate
+  _openssl="make-ssl-cert generate-default-snakeoil --force-overwrite; \
         "
 
   # Mariadb
-  _mariadb="mariadb-server \
+  _mariadb="mariadb-server default-mysql-client \
         "
 
   _mariadb_config="sed -i \"s@^pid-file@#pid-file@g\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
         sed -i \"s@^socket@#socket@g\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
-        sed -i \"/^\\[mysqld\\]/a socket=/var/lib/mysql/mysql.sock\\ntmpdir=/tmp\\nlc-messages-dir=/usr/share/mysql\\nskip-external-locking\\nquery_cache_limit=1G\\nquery_cache_size=16M\\ninnodb_file_per_table=1\\ninnodb_file_format=barracuda\\ninnodb_strict_mode=0\\nsql_mode=''\\ninnodb_large_prefix=1\\ninnodb_log_file_size=256M\\ntmp_table_size=256MB\\nmax_heap_table_size=256MB\\nslow_query_log = 1\\nslow_query_log_file = /var/log/apache2/mariadb-slow.log\\nlong_query_time = 2\\nlog_error=/var/log/apache2/mariadb.log\\nuser=root\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
+        sed -i \"/^\\[mysqld\\]/a socket=/var/lib/mysql/mysql.sock\\ntmpdir=/tmp\\nlc-messages-dir=/usr/share/mysql\\nskip-external-locking\\nquery_cache_limit=1G\\nquery_cache_size=16M\\ninnodb_file_per_table=1\\ninnodb_strict_mode=0\\nsql_mode=''\\ninnodb_large_prefix=1\\ninnodb_log_file_size=256M\\ntmp_table_size=256MB\\nmax_heap_table_size=256MB\\nslow_query_log = 1\\nslow_query_log_file = /var/log/apache2/mariadb-slow.log\\nlong_query_time = 2\\nlog_error=/var/log/apache2/mariadb.log\\nuser=root\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
         sed -i \"s@^User=mysql@User=root@g\" /usr/lib/systemd/system/mariadb.service; \
         sed -i \"s@^Group=mysql@Group=root@g\" /usr/lib/systemd/system/mariadb.service; \
         sed -i \"s@/usr/sbin/${MARIADB_FIX}@/usr/sbin/mysqld --user=root@g\" /usr/lib/systemd/system/mariadb.service; \
         "
 
-  # elasticsearch
+  # elasticsearch - Updated for Debian 12
   _elasticsearch="curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elastic.gpg; \
         echo \"deb [signed-by=/usr/share/keyrings/elastic.gpg] https://artifacts.elastic.co/packages/7.x/apt stable main\" | tee -a /etc/apt/sources.list.d/elastic-7.x.list; \
         apt-get update; \
         apt-get install -y elasticsearch; \
         "
 
-  # php
+  # PHP repository setup for Debian using sury.org
+  _php_repo="wget -qO /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb; \
+        dpkg -i /tmp/debsuryorg-archive-keyring.deb; \
+        echo \"deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ \$(lsb_release -sc) main\" > /etc/apt/sources.list.d/sury-php.list; \
+        apt-get update; \
+        "
+
+  # php packages
   _php="php${PHP_VERSION} php${PHP_VERSION}-bz2 php${PHP_VERSION}-curl \
           php${PHP_VERSION}-gd php${PHP_VERSION}-intl php${PHP_VERSION}-mbstring \
           php${PHP_VERSION}-pspell php${PHP_VERSION}-xml \
           php${PHP_VERSION}-zip php${PHP_VERSION}-imap php${PHP_VERSION}-imagick \
-          php${PHP_VERSION}-mysqlnd php${PHP_VERSION}-soap php${PHP_VERSION}-dev \
+          php${PHP_VERSION}-mysql php${PHP_VERSION}-soap php${PHP_VERSION}-dev \
           php${PHP_VERSION}-memcached php${PHP_VERSION}-xdebug php${PHP_VERSION}-bcmath \
-          php${PHP_VERSION}-tidy php${PHP_VERSION}-grpc \
+          php${PHP_VERSION}-tidy \
           memcached \
           "
 
@@ -262,16 +294,15 @@ function build_image {
         sed -i \"s@upload_max_filesize.*@upload_max_filesize=16M@g\" /etc/php/${PHP_VERSION}/cli/php.ini; \
         "
 
-  # sodium
-  _php_sodium="php${PHP_VERSION}-sodium\
-        "
+  # sodium (available by default in PHP 7.2+ on Debian)
+  _php_sodium=""
 
   # postfix config
   _postfix_config="echo \"postfix postfix/mailname string ${SITE_NAME}\" | debconf-set-selections; \
         echo \"postfix postfix/main_mailer_type string 'Internet Site'\" | debconf-set-selections; \
-        apt-get install --assume-yes -y mailutils; \
+        apt-get install --assume-yes -y postfix mailutils; \
         sed -i \"s@myhostname =.*@myhostname = ${HOSTNAME}@g\" /etc/postfix/main.cf; \
-        printf \"smtpd_use_tls = no\nvirtual_maps = regexp:/etc/postfix/virtual-regexp\nmaillog_file=/var/log/apache2/mail.log\" >> /etc/postfix/main.cf; \
+        printf \"smtpd_use_tls = no\\nvirtual_maps = regexp:/etc/postfix/virtual-regexp\\nmaillog_file=/var/log/apache2/mail.log\" >> /etc/postfix/main.cf; \
         printf \"/.+@.+/ root\" > /etc/postfix/virtual-regexp; \
         "
 
@@ -279,56 +310,79 @@ function build_image {
         "
 
   # build the image in docker style
-  message "Building a custom iamge form ${SITE_NAME} ..."
+  message "Building a custom image for ${SITE_NAME} ..."
+  if [ "$CUSTOM_APACHE_BUILD" == "1" ]; then
+    message "Custom Apache build enabled - this will take longer but removes security warnings"
+  else
+    message "Using standard Apache configuration (runs as root)"
+  fi
+
   _file="${SITE_HOME}/.container/Dockerfile.${SITE_NAME}"
   echo "FROM ${IMAGE}" >$_file
   echo "LABEL maintainer='bridgesense llc'" >>$_file
-  echo "LABEL description='Provides a full LAMP stack, xdebug and mail shield for PHP development.'" >>$_file
-  echo "LABEL io.k8s.display-name='An Ubuntu LTS full LAMP stack'" >>$_file
+  echo "LABEL description='Provides a full LAMP stack, xdebug and mail shield for PHP development on Debian.'" >>$_file
+  echo "LABEL io.k8s.display-name='A Debian 12 full LAMP stack'" >>$_file
 
   # Disable IPv6
   echo "RUN echo 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf" >>$_file
   echo "RUN echo 'Acquire::ForceIPv4 \"true\";' > /etc/apt/apt.conf.d/99force-ipv4" >>$_file
 
   echo "RUN apt-get update -y --fix-missing" >>$_file
-  # included epel for mcrypt and imagick libraries
   echo "RUN apt-get install -y ${_tools}" >>$_file
-  echo "RUN LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php" >>$_file
-  echo "RUN apt-get update -y" >>$_file
-  echo "RUN apt-get dist-upgrade -y" >>$_file
+  echo "RUN ${_php_repo}" >>$_file
   echo "RUN apt-get install -y ${_apache} ${_mariadb} ${_php}" >>$_file
+  echo "RUN apt-get install -y postfix" >>$_file
   echo "RUN ${_openssl}" >>$_file
-  echo "RUN ${_apache_config} ${_mariadb_config} ${_php_config} ${_xdebug_config} ${_postfix_config}" >>$_file
-  echo "RUN ${_elasticsearch}" >>$_file
-  sodium_ver=("7.0" "7.1")
-  if [[ " ${sodium_ver[*]} " =~ " ${PHP_VERSION} " ]]; then
-    echo "RUN apt-get install -y ${_php_sodium}" >>$_file
+
+  # Choose Apache configuration based on CUSTOM_APACHE_BUILD setting
+  if [ "$CUSTOM_APACHE_BUILD" == "1" ]; then
+    echo "RUN ${_custom_apache_build}" >>$_file
+  else
+    echo "RUN ${_apache_config}" >>$_file
   fi
+
+  echo "RUN ${_mariadb_config}" >>$_file
+  echo "RUN ${_php_config}" >>$_file
+  echo "RUN ${_xdebug_config}" >>$_file
+  echo "RUN ${_postfix_config}" >>$_file
+  echo "RUN ${_elasticsearch}" >>$_file
+
+  # Sodium is included by default in modern PHP versions on Debian, no separate package needed
+
   if [ $USE_EXTRAS -eq 1 ]; then
     echo "RUN apt-get install -y ${_modules}" >>$_file
     echo "RUN ${_npm_install}" >>$_file
     echo "RUN ${_composer}" >>$_file
   fi
 
-  # apache override
-  echo "RUN wget http://github.com/bridgesense/lampready/raw/master/apache2-bin_2.4.58-1ubuntu8.6_amd64.deb -O /usr/local/share/apache2-override.deb" >>$_file
-  echo "RUN sleep 2" >>$_file
-  echo "RUN dpkg -i /usr/local/share/apache2-override.deb" >>$_file
-
   # set server time
   echo "RUN ln -fs /usr/share/zoneinfo/${TIMEZONE} /etc/localtime" >>$_file
 
-  podman build -t "${SITE_NAME}:private" -f $_file
+  # Build with verbose output and logging
+  message "Building image with verbose output..."
+  podman build --progress=plain -t "${SITE_NAME}:private" -f $_file 2>&1 | tee "${SITE_HOME}/.container/build.log"
+
+  if [ ${PIPESTATUS[0]} -eq 0 ]; then
+    message "Image build completed successfully. Build log saved to ${SITE_HOME}/.container/build.log"
+  else
+    message "Image build failed! Check ${SITE_HOME}/.container/build.log for details"
+    echo "Last 50 lines of build log:"
+    tail -50 "${SITE_HOME}/.container/build.log"
+    exit 1
+  fi
 }
 
 # cleans the container directory
 function clean_container_directory {
   message "Cleaning the container directory: ${SITE_HOME}/.container ..."
 
-  rm -rf "${SITE_HOME}/.container/mariadb"
-  rm -rf "${SITE_HOME}/.container/log"
-  rm -f "${SITE_HOME}/.container/Dockerfile.${SITE_NAME}"
-  rm -f "${SITE_HOME}/.container/init.lock"
+  # Remove the entire .container directory if it exists
+  if [ -d "${SITE_HOME}/.container" ]; then
+    rm -rf "${SITE_HOME}/.container"
+    message "Removed entire .container directory"
+  else
+    message "No .container directory found"
+  fi
 }
 
 # cleans up the LAMP container
@@ -449,16 +503,24 @@ function display_help {
   echo "images.  A quick reset is not that much of a disadvantage when considering time and"
   echo "deadlines."
   echo ""
+  echo "CUSTOM APACHE BUILD:"
+  echo "Set CUSTOM_APACHE_BUILD=\"1\" at the top of this script to build Apache with the"
+  echo "BIG_SECURITY_HOLE flag. This removes security warnings but takes longer to build."
+  echo "Default is \"0\" which uses standard Apache configured to run as root."
+  echo ""
   echo "CREDITS:"
   echo "This script was based on Scott McCarty's contribution to this subject,"
   echo "A Hacker's Guide to Moving LInux Services Into Containers:"
   echo ""
   echo "https://crunchtools.com/moving-linux-services-to-containers"
   echo ""
+  echo "Debian adaptation maintains compatibility with the original Ubuntu version"
+  echo "while using Debian 12 (Bookworm) as the base system."
+  echo ""
 }
 
 function export_databases {
-  # import database
+  # export database
   for ((i = 1; i < 50; i++)); do
     if set | grep "^DB$i" >/dev/null 2>&1; then
       declare -n var="DB$i"
@@ -646,11 +708,6 @@ function start_systemd_service {
   podman exec "${SITE_NAME}" service memcached start
   podman exec "${SITE_NAME}" service elasticsearch start
   podman exec "${SITE_NAME}" service mariadb start
-  if [ $USE_TMPFS -ne 1 ]; then
-    # the apache2 patch must be applied on each iteration
-    # as a work around for older combinations of systemd and podman
-    podman exec "${SITE_NAME}" dpkg -i /usr/local/share/apache2-override.deb
-  fi
   podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
   podman exec "${SITE_NAME}" service apache2 start
 }
@@ -757,11 +814,6 @@ if [ "$ACTION" == "up" ]; then
     podman exec "${SITE_NAME}" service memcached start
     podman exec "${SITE_NAME}" service elasticsearch start
     podman exec "${SITE_NAME}" service mariadb start
-    if [ $USE_TMPFS -ne 1 ]; then
-      # the apache2 patch must be applied on each iteration
-      # as a work around for older combinations of systemd and podman
-      podman exec "${SITE_NAME}" dpkg -i /usr/local/share/apache2-override.deb
-    fi
 
     podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
     podman exec "${SITE_NAME}" service apache2 start
@@ -782,7 +834,7 @@ if [ "$ACTION" == "up" ]; then
     echo ""
     echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
     echo "+                                                                 +"
-    echo "+  Your LAMP is ready...                                          +"
+    echo "+  Your Debian LAMP is ready...                                   +"
     echo "+                                                                 +"
     echo "+  Please add the following line to your hosts file:              +"
     echo "+  127.0.0.1   ${SITE_NAME}"
@@ -795,7 +847,7 @@ if [ "$ACTION" == "up" ]; then
     echo "+  semanage port -a -t http_port_t -p tcp ${XDEBUG_PORT}"
     echo "+                                                                 +"
     echo "+  All outbound mail is trapped and can be viewed with:           +"
-    echo "+  bash box mail                                                  +"
+    echo "+  bash box mail                                           +"
     echo "+                                                                 +"
     echo "+  See LAMPready.com for more information.                        +"
     echo "+                                                                 +"
@@ -832,7 +884,7 @@ if [ "$ACTION" == "destroy" ]; then
   echo "" && exit >/dev/null 2>&1
 fi
 
-# View Email Trap
+# Export databases
 if [ "$ACTION" == "export" ]; then
   get_state
 
@@ -848,7 +900,7 @@ if [ "$ACTION" == "export" ]; then
   exit
 fi
 
-# View Email Trap
+# Import databases
 if [ "$ACTION" == "import" ]; then
   get_state
   if [ $STATE -eq 0 ]; then
@@ -893,7 +945,7 @@ if [ "$ACTION" == "mysql" ]; then
   exit
 fi
 
-# Enter Mysql Prompt
+# List running containers
 if [ "$ACTION" == "ps" ]; then
   podman container list
   exit
@@ -925,7 +977,7 @@ if [ $ACTION == "reset" ]; then
     podman rmi --all --force
     echo ""
     echo "You may need to manually clean any other deployments of this script"
-    echo "with 'bash box destory', or manually remove the .container directory."
+    echo "with 'bash box destroy', or manually remove the .container directory."
     echo ""
     message "Everything has been reset"
   else
