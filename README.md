@@ -74,7 +74,7 @@ Download the box script into your project's root directory.
 Debian 12 Bookworm
 
 ```
-curl https://raw.githubusercontent.com/your-repo/debian-lampready/main/box > box
+curl https://raw.githubusercontent.com/odysseyalive/lampready/refs/heads/master/debian-box > box
 ```
 
 **PLEASE NOTE:** Be sure to review the notes at the head of the box script.
