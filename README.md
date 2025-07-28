@@ -3,20 +3,20 @@
 ---
 
 A LAMP is an acronym describing a Web server that runs on a Linux platform with
-[Apache](https://httpd.apache.org/), [MariaDB](https://www.mariadb.org/) and
+[Apache](https://httpd.apache.org/), [MariaDB](https://www.mariadb.org/) (MySQL) and
 [PHP](https://www.php.net/).  Web pages with [Python](https://www.python.org/)
 and [Perl](https://www.perl.org/) can also be served under this environment.
 References to a LAMP stack generally relate to an environment where website
 code can be tested prior to professional deployment.
 
-There are a lot of great LAMP packages out there. However, I wanted something I could spin up fast without a lot of manual intervention. Each website is unique in the way it is served and maintained. This LAMP stack is not too different from an actual working Web server, but built on Debian 12 (Bookworm) instead of Ubuntu.
+There are a lot of great LAMP packages out there. However, I wanted something I could spin up fast without a lot of manual intervention. Each website is unique in the way it is served and maintained. This LAMP stack is not too different from an actual working Web server, but built on Debian 12 (Bookworm).
 
 As a general warning though, this environment is ***only intended*** to be used for debugging code. If anything, most LAMP stacks are way oversimplified and are in no way ready for production.
 
 How it Works
 ---
 
-This script syncs your project's root folder ***safely*** inside a [container](https://developers.redhat.com/blog/2019/01/15/podman-managing-containers-pods#). That allows you to work on and debug code in a working Web server environment. Most of these virtual environments do not have mail utilities set up, because dealing with the fallout of development spam is never fun!
+This script syncs your project's root folder ***safely*** inside a [container](https://developers.redhat.com/blog/2019/01/15/podman-managing-containers-pods#). That allows you to work on and debug code, mimicking a production Web server environment. Most of these virtual environments do not have mail utilities set up, because dealing with the fallout of development spam is never fun!
 
 Sometimes those forms and crons need tested. LAMPready uses [Postfix](https://www.postfix.org/) to route all outbound mail to a single convenient inbox which can be accessed with the ***bash box mail*** command.
 
@@ -441,7 +441,7 @@ For the Debian version, I simplified this by just running Apache as root inside
 the container. No custom compilation needed - just some configuration changes.
 
 If you really want to build a custom Apache binary with the `BIG_SECURITY_HOLE`
-flag (like the Ubuntu version used to do), here's how you'd do it on Debian 12:
+flag (like the Ubuntu version of Lampready used to do), here's how you'd do it on Debian 12:
 
 ```bash
 # Step 1: Add source repositories with proper signing keys
@@ -490,14 +490,6 @@ setup makes sense:
 **Why You Should Never Do This in Production**
 
 But let me be crystal clear: ***DO NOT DO THIS IN PRODUCTION***. Ever.
-
-In production:
-
-* Use proper user separation
-* Run Apache as www-data
-* Set up proper file permissions
-* Use security frameworks like AppArmor or SELinux
-* Follow the principle of least privilege
 
 A compromised web server running as root can own your entire system. That's bad.
 Very bad.
