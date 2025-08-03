@@ -1,35 +1,18 @@
 #!/usr/bin/env bash
-# Home: https://github.com/bridgesense/lampready
+# Home: https://github.com/odysseyalive/lampready
 # This script creates a LAMP stack with a single debian bookworm container.
+# Enhanced with host environment verification and direct systemd service generation.
 # Customize the information below to suit your needs,
 # then run: bash box
-#
+
 # Before you begin:
-# Make sure to expose priviledged ports
+# Make sure to expose priviledged ports if you need them
 # > sudo -i
 # > echo "net.ipv4.ip_unprivileged_port_start=0" > /etc/sysctl.d/05-expose-privileged.conf
 # > sysctl --system
 # > sysctl net.ipv4.ip_unprivileged_port_start=0
-#
-# TROUBLE SHOOTING
-# Error: OCI runtime error: chmod `run/shm`: Operation not supported
-# see: https://noobient.com/2023/11/15/fixing-ubuntu-containers-failing-to-start-with-systemd/
-# bash box reset
-# rm -rf ~/.local/share/containers
-# export CRUN_VER='1.11.2'
-# mkdir -p "${HOME}/.local/bin"
-# curl -L "https://github.com/containers/crun/releases/download/${CRUN_VER}/crun-${CRUN_VER}-linux-amd64" -o "${HOME}/.local/bin/crun"
-# chmod +x "${HOME}/.local/bin/crun"
-# mkdir -p "${HOME}/.config/containers"
-# cat << EOF > "${HOME}/.config/containers/containers.conf"
-# [engine.runtimes]
-# crun = [
-#   "${HOME}/.local/bin/crun",
-#   "/usr/bin/crun"
-# ]
-# EOF
-#
-# # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 HOSTNAME="lampready.com"
 SUB_DOMAIN="dev"
 PUBLIC_ROOT_PATH="public_html"
@@ -43,9 +26,7 @@ PHP_VERSION="8.3" # 7.4, 8.0, 8.1, 8.2, or 8.3
 PHP_MAX_EXEC_TIME="600"
 PHP_MEM_LIMIT="512M"
 
-# WARNING! Apache runs as root inside this container to handle permissions as you would
-# expect.  Therefore Apache has access to everything root has. When enabling xdebug
-# you will be exposing private network information to the container environment.
+# Enhanced security configuration
 XDEBUG_ENABLE="0"
 XDEBUG_PORT="9003"
 XDEBUG_FORCE_DISPLAY_ERRORS="1"
@@ -53,6 +34,11 @@ XDEBUG_SCREAM="0"
 XDEBUG_DISPLAY_MAX_DATA="2048"
 XDEBUG_DISPLAY_MAX_DEPTH="3"
 XDEBUG_DISPLAY_MAX_CHILDREN="128"
+
+# Enhanced permission management
+CONTAINER_USER="webuser"
+CONTAINER_UID="1000"
+CONTAINER_GID="1000"
 
 declare -A DB1=(
   [DB_NAME]=""
@@ -78,20 +64,11 @@ if [ "$SUB_DOMAIN" != "" ]; then SITE_NAME="${SUB_DOMAIN}.${HOSTNAME}"; else SIT
 MULTI_BOX=0
 USE_TMPFS=0
 USE_EXTRAS=1
-if command -v podman >/dev/null 2>&1; then
-  if [[ $(podman --version | awk '{print int($3)}') -ge 4 ]]; then
-    # Podman version is greater than 4
-    MARIADB_FIX="mariadb"
-  else
-    # Podman version is lower than or equal to 4.3.1
-    MARIADB_FIX="mysqld"
-  fi
-fi
 
-# CUSTOM APACHE BUILD OPTION
-# Set to "1" to build Apache with BIG_SECURITY_HOLE flag (removes root warnings)
-# Set to "0" to use standard Apache configured to run as root (not recommended)
-CUSTOM_APACHE_BUILD="1"
+# Get host user information for proper mapping
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+HOST_USER=$(whoami)
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # functions
@@ -114,6 +91,10 @@ function build_container_directory {
     mkdir -p "${SITE_HOME}/${PUBLIC_ROOT_PATH}"
     message "It worked!! Please do something about the missing files in ${SITE_HOME}/${PUBLIC_ROOT_PATH}" >"${SITE_HOME}/${PUBLIC_ROOT_PATH}/index.html"
   fi
+
+  # Set proper ownership for mounted directories
+  chown -R "${HOST_UID}:${HOST_GID}" "${SITE_HOME}/.container"
+  chown -R "${HOST_UID}:${HOST_GID}" "${SITE_HOME}/${PUBLIC_ROOT_PATH}"
 }
 
 # build default httpd conf files
@@ -183,11 +164,11 @@ function build_image {
   if podman images | grep -q "$SITE_NAME"; then
     message "Cleaning up an old image ..."
     podman rm $SITE_NAME >/dev/null 2>&1
-    podman rmi "${SITE_NAME}:private" >/dev/null 2>&1
+    podman rmi "localhost/${SITE_NAME}:private" >/dev/null 2>&1
   fi
 
   # tools
-  _tools="vim dialog apt-utils dumb-init git curl wget software-properties-common mutt lsb-release ca-certificates gnupg"
+  _tools="vim dialog apt-utils dumb-init git curl wget software-properties-common mutt lsb-release ca-certificates gnupg sudo"
 
   # modules
   _modules="nodejs python3 python3-pip ruby"
@@ -206,51 +187,37 @@ function build_image {
   # apache
   _apache="apache2 openssl ssl-cert"
 
-  # Apache config (standard - runs as root)
-  _apache_config="a2enmod ssl rewrite headers; \
-        sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf; \
-        sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=root@g\" /etc/apache2/envvars; \
-        sed -i \"s@export APACHE_RUN_GROUP.*@export APACHE_RUN_GROUP=root@g\" /etc/apache2/envvars; \
-        "
-
-  # Custom Apache build with BIG_SECURITY_HOLE flag (optional)
-  _custom_apache_build="echo 'deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm main' >> /etc/apt/sources.list.d/sources.list && \
-        echo 'deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian-security bookworm-security main' >> /etc/apt/sources.list.d/sources.list && \
-        echo 'deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm-updates main' >> /etc/apt/sources.list.d/sources.list && \
-        apt-get update && \
-        apt-get build-dep -y apache2 && \
-        apt-get install -y fakeroot && \
-        cd /root && \
-        apt source apache2 && \
-        cd apache2-* && \
-        sed -i 's/AP2_CFLAGS = -pipe \\\$(CFLAGS)/AP2_CFLAGS = -pipe \\\$(CFLAGS) -DBIG_SECURITY_HOLE/' debian/rules && \
-        dpkg-buildpackage -rfakeroot -uc -b && \
-        cd .. && \
-        dpkg -i apache2-bin_*.deb && \
-        apt-mark hold apache2-bin && \
-        rm -f /etc/apt/sources.list.d/sources.list && \
-        apt-get update && \
-        rm -rf /root/apache2-* && \
-        a2enmod ssl rewrite headers && \
-        sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf && \
-        sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=root@g\" /etc/apache2/envvars && \
-        sed -i \"s@export APACHE_RUN_GROUP.*@export APACHE_RUN_GROUP=root@g\" /etc/apache2/envvars;"
+  # Enhanced Apache configuration with proper user mapping
+  _apache_config="groupadd -g ${CONTAINER_GID} ${CONTAINER_USER} && \
+    useradd -u ${CONTAINER_UID} -g ${CONTAINER_GID} -m -s /bin/bash ${CONTAINER_USER} && \
+    a2enmod ssl rewrite headers && \
+    sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf && \
+    sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=${CONTAINER_USER}@g\" /etc/apache2/envvars && \
+    sed -i \"s@export APACHE_RUN_GROUP.*@export APACHE_RUN_GROUP=${CONTAINER_USER}@g\" /etc/apache2/envvars && \
+    sed -i \"s@Listen 80@Listen ${HTTP_PORT}@g\" /etc/apache2/ports.conf && \
+    sed -i \"s@Listen 443@Listen ${SSL_PORT}@g\" /etc/apache2/ports.conf && \
+    mkdir -p /var/run/apache2 /var/lock/apache2 && \
+    chown -R ${CONTAINER_USER}:${CONTAINER_USER} /var/log/apache2 /var/run/apache2 /var/lock/apache2 && \
+    chown -R ${CONTAINER_USER}:${CONTAINER_USER} /var/www"
 
   # openssl - generate self-signed certificate
   _openssl="make-ssl-cert generate-default-snakeoil --force-overwrite; \
         "
 
-  # Mariadb
+  # Mariadb with proper user configuration
   _mariadb="mariadb-server default-mysql-client \
         "
 
-  _mariadb_config="sed -i \"s@^pid-file@#pid-file@g\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
-        sed -i \"s@^socket@#socket@g\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
-        sed -i \"/^\\[mysqld\\]/a socket=/var/lib/mysql/mysql.sock\\ntmpdir=/tmp\\nlc-messages-dir=/usr/share/mysql\\nskip-external-locking\\nquery_cache_limit=1G\\nquery_cache_size=16M\\ninnodb_file_per_table=1\\ninnodb_strict_mode=0\\nsql_mode=''\\ninnodb_large_prefix=1\\ninnodb_log_file_size=256M\\ntmp_table_size=256MB\\nmax_heap_table_size=256MB\\nslow_query_log = 1\\nslow_query_log_file = /var/log/apache2/mariadb-slow.log\\nlong_query_time = 2\\nlog_error=/var/log/apache2/mariadb.log\\nuser=root\" /etc/mysql/mariadb.conf.d/50-server.cnf; \
-        sed -i \"s@^User=mysql@User=root@g\" /usr/lib/systemd/system/mariadb.service; \
-        sed -i \"s@^Group=mysql@Group=root@g\" /usr/lib/systemd/system/mariadb.service; \
-        sed -i \"s@/usr/sbin/${MARIADB_FIX}@/usr/sbin/mysqld --user=root@g\" /usr/lib/systemd/system/mariadb.service; \
-        "
+  _mariadb_config="mkdir -p /var/lib/mysql /var/run/mysqld && \
+    chown -R ${CONTAINER_USER}:${CONTAINER_USER} /var/lib/mysql /var/run/mysqld && \
+    sed -i \"s@^pid-file@#pid-file@g\" /etc/mysql/mariadb.conf.d/50-server.cnf && \
+    sed -i \"s@^socket@#socket@g\" /etc/mysql/mariadb.conf.d/50-server.cnf && \
+    printf \"\n[client-server]\nsocket=/var/lib/mysql/mysql.sock\n\" >> /etc/mysql/mariadb.conf.d/50-server.cnf && \
+    sed -i \"/^\\[mysqld\\]/a socket=/var/lib/mysql/mysql.sock\\ntmpdir=/tmp\\nlc-messages-dir=/usr/share/mysql\\nskip-external-locking\\nquery_cache_limit=1G\\nquery_cache_size=16M\\ninnodb_file_per_table=1\\ninnodb_strict_mode=0\\nsql_mode=''\\ninnodb_large_prefix=1\\ninnodb_log_file_size=256M\\ntmp_table_size=256MB\\nmax_heap_table_size=256MB\\nslow_query_log = 1\\nslow_query_log_file = /var/log/apache2/mariadb-slow.log\\nlong_query_time = 2\\nlog_error=/var/log/apache2/mariadb.log\\nuser=${CONTAINER_USER}\" /etc/mysql/mariadb.conf.d/50-server.cnf && \
+    sed -i \"s@^User=mysql@User=${CONTAINER_USER}@g\" /usr/lib/systemd/system/mariadb.service && \
+    sed -i \"s@^Group=mysql@Group=${CONTAINER_USER}@g\" /usr/lib/systemd/system/mariadb.service && \
+    sed -i \"s@/usr/sbin/mysqld@/usr/sbin/mysqld --user=${CONTAINER_USER}@g\" /usr/lib/systemd/system/mariadb.service; \
+		"
 
   # elasticsearch - Updated for Debian 12
   _elasticsearch="curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elastic.gpg; \
@@ -294,9 +261,6 @@ function build_image {
         sed -i \"s@upload_max_filesize.*@upload_max_filesize=16M@g\" /etc/php/${PHP_VERSION}/cli/php.ini; \
         "
 
-  # sodium (available by default in PHP 7.2+ on Debian)
-  _php_sodium=""
-
   # postfix config
   _postfix_config="echo \"postfix postfix/mailname string ${SITE_NAME}\" | debconf-set-selections; \
         echo \"postfix postfix/main_mailer_type string 'Internet Site'\" | debconf-set-selections; \
@@ -310,18 +274,13 @@ function build_image {
         "
 
   # build the image in docker style
-  message "Building a custom image for ${SITE_NAME} ..."
-  if [ "$CUSTOM_APACHE_BUILD" == "1" ]; then
-    message "Custom Apache build enabled - this will take longer but removes security warnings"
-  else
-    message "Using standard Apache configuration (runs as root)"
-  fi
+  message "Building a custom image for ${SITE_NAME} with enhanced security..."
 
   _file="${SITE_HOME}/.container/Dockerfile.${SITE_NAME}"
   echo "FROM ${IMAGE}" >$_file
   echo "LABEL maintainer='bridgesense llc'" >>$_file
-  echo "LABEL description='Provides a full LAMP stack, xdebug and mail shield for PHP development on Debian.'" >>$_file
-  echo "LABEL io.k8s.display-name='A Debian 12 full LAMP stack'" >>$_file
+  echo "LABEL description='Provides a secure LAMP stack with proper user mapping for PHP development on Debian.'" >>$_file
+  echo "LABEL io.k8s.display-name='A Debian 12 secure LAMP stack'" >>$_file
 
   # Disable IPv6
   echo "RUN echo 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf" >>$_file
@@ -334,13 +293,8 @@ function build_image {
   echo "RUN apt-get install -y postfix" >>$_file
   echo "RUN ${_openssl}" >>$_file
 
-  # Choose Apache configuration based on CUSTOM_APACHE_BUILD setting
-  if [ "$CUSTOM_APACHE_BUILD" == "1" ]; then
-    echo "RUN ${_custom_apache_build}" >>$_file
-  else
-    echo "RUN ${_apache_config}" >>$_file
-  fi
-
+  # Use enhanced Apache configuration instead of custom build
+  echo "RUN ${_apache_config}" >>$_file
   echo "RUN ${_mariadb_config}" >>$_file
   echo "RUN ${_php_config}" >>$_file
   echo "RUN ${_xdebug_config}" >>$_file
@@ -358,9 +312,15 @@ function build_image {
   # set server time
   echo "RUN ln -fs /usr/share/zoneinfo/${TIMEZONE} /etc/localtime" >>$_file
 
+  # Set a sane PATH that includes sbin directories for all users
+  echo "ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >>$_file
+
+  # Set the default user for the container
+  echo "USER ${CONTAINER_USER}" >>$_file
+
   # Build with verbose output and logging
-  message "Building image with verbose output..."
-  podman build --progress=plain -t "${SITE_NAME}:private" -f $_file 2>&1 | tee "${SITE_HOME}/.container/build.log"
+  message "Building image with enhanced security and user mapping..."
+  podman build --progress=plain -t "localhost/${SITE_NAME}:private" -f $_file 2>&1 | tee "${SITE_HOME}/.container/build.log"
 
   if [ ${PIPESTATUS[0]} -eq 0 ]; then
     message "Image build completed successfully. Build log saved to ${SITE_HOME}/.container/build.log"
@@ -391,30 +351,25 @@ function clean_lamp_container {
 
   if [ $STATE -eq 0 ]; then
     message "stoping LAMP service..."
-    systemctl --user stop "container-${SITE_NAME}" >/dev/null 2>&1
+    systemctl --user stop "container-${SITE_NAME}.service" >/dev/null 2>&1
+    systemctl --user disable "container-${SITE_NAME}.service" >/dev/null 2>&1
   fi
 
-  if [ $STATE -lt 2 ]; then
-    message "stoping container..."
+  # Adding a check for running container by name, as service check might fail
+  if podman container exists $SITE_NAME; then
+    message "Stopping container..."
     podman stop $SITE_NAME >/dev/null 2>&1
-  fi
-
-  if [ $STATE -lt 3 ]; then
-    message "removing container..."
+    message "Removing container..."
     podman rm $SITE_NAME >/dev/null 2>&1
   fi
 
-  if [ $STATE -lt 4 ]; then
+  if podman image exists "localhost/${SITE_NAME}:private"; then
     message "removing image..."
-    podman rmi "${SITE_NAME}:private" >/dev/null 2>&1
-  fi
-
-  if [ $STATE -gt 3 ]; then
-    message "no containers found"
+    podman rmi "localhost/${SITE_NAME}:private" >/dev/null 2>&1
   fi
 
   if [ -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service" ]; then
-    rm -rf "${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
+    rm -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
     systemctl --user daemon-reload
     sleep 2
   fi
@@ -438,6 +393,10 @@ function display_help {
   echo "bash box reset       the emergency panic button - see notes below"
   echo "bash box ssh         enter the container commandline"
   echo ""
+  echo "ENHANCED SECURITY FEATURES:"
+  echo "This script now uses proper user mapping instead of running Apache as root."
+  echo "Apache runs on standard ports (${HTTP_PORT}/${SSL_PORT}) directly."
+  echo ""
   echo "NOTE ABOUT ROOTLESS CONTAINERS:"
   echo "A feature of the rootless container is the ability to utilize the host"
   echo "system's environment.  This provides an incredible boost in system"
@@ -453,6 +412,12 @@ function display_help {
   echo ""
   echo "In short, any adjusts to kernel runtime parameters are adjustments"
   echo "that need performed on the host system."
+  echo ""
+  echo "PERMISSION MANAGEMENT:"
+  echo "Files created by the container will now have proper ownership matching"
+  echo "your host user. The container runs with user mapping:"
+  echo "- Container user: ${CONTAINER_USER} (UID: ${CONTAINER_UID})"
+  echo "- Host user: ${HOST_USER} (UID: ${HOST_UID})"
   echo ""
   echo "EXPANDING INOTIFY WATCH LIMIT"
   echo "In another example, popular tools like Angular or Gulp can reload and"
@@ -490,23 +455,21 @@ function display_help {
   echo "${SITE_HOME}/${PUBLIC_ROOT_PATH}"
   echo ""
   echo "WHY DO I USE THE RESET OPTION FOR?"
-  echo "Don't confuse the reset option with the destroy command.  Destroy wipes a project clean."
+  echo "Don't confuse the reset option with the destroy command. Destroy wipes a project clean."
   echo "Reset wipes out everything you've done with podman. It essentially destroys all projects"
   echo "including the master image, so be careful with it. You might have other projects that are"
   echo "not related to this script that will also be removed."
   echo ""
   echo "From time to time, a reoccurring error appears during the build phase, 'error copying"
-  echo "layers and metadata for container'.  This error is not based on any dangling processes"
+  echo "layers and metadata for container'. This error is not based on any dangling processes"
   echo "or bad images. The reset option is just a quick way around the issue, allowing you to"
   echo "move forward quickly in setting up a new project -- at the cost of trashing any existing"
-  echo "projects that are working.  In most cases, this script doesn't take long spinning up new"
-  echo "images.  A quick reset is not that much of a disadvantage when considering time and"
+  echo "projects that are working. In most cases, this script doesn't take long spinning up new"
+  echo "images. A quick reset is not that much of a disadvantage when considering time and"
   echo "deadlines."
   echo ""
-  echo "CUSTOM APACHE BUILD:"
-  echo "Set CUSTOM_APACHE_BUILD=\"1\" at the top of this script to build Apache with the"
-  echo "BIG_SECURITY_HOLE flag. This removes security warnings but takes longer to build."
-  echo "Default is \"0\" which uses standard Apache configured to run as root."
+  echo "SECURITY IMPROVEMENTS:"
+  echo "This version uses proper user mapping and standard ports for Apache."
   echo ""
   echo "CREDITS:"
   echo "This script was based on Scott McCarty's contribution to this subject,"
@@ -514,8 +477,8 @@ function display_help {
   echo ""
   echo "https://crunchtools.com/moving-linux-services-to-containers"
   echo ""
-  echo "Debian adaptation maintains compatibility with the original Ubuntu version"
-  echo "while using Debian 12 (Bookworm) as the base system."
+  echo "Enhanced with proper permission handling and security best practices"
+  echo "for modern container deployments on Debian 12 (Bookworm)."
   echo ""
 }
 
@@ -559,7 +522,7 @@ function import_databases {
           # modifications for development site name designation
           if [ "${var[DB_TYPE]}" == "wordpress" ]; then
             WPQ1=$(mysql -N -e "use ${var[DB_NAME]}; SELECT option_value FROM ${var[DB_PREFIX]}options WHERE option_name = 'siteurl'")
-            WPA1=$(sed -E "s@(:\/\/([a-zA-Z0-9\-]*\.)?([a-zA-Z0-9\-]*)\.([a-zA-Z0-9\-]*))(\.[a-zA-Z0-9\-]*)?\/?@://${SITE_NAME}@" <<<$WPQ1)
+            WPA1=$(sed -E "s@(:\/\/([a-zA-Z0-9\-]*\.)?([a-zA-Z0-9\-]*)\.([a_zA-Z0-9\-]*))(\.[a-zA-Z0-9\-]*)?\/?@://${SITE_NAME}@" <<<$WPQ1)
             mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}options SET option_value = '${WPA1}' WHERE option_name = 'siteurl' OR option_name = 'home'"
             mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}posts SET guid = replace(guid, '${WPQ1}','${WPA1}')"
             mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}posts SET post_content = replace(post_content, '${WPQ1}', '${WPA1}')"
@@ -602,28 +565,25 @@ function import_databases {
 # get current state of container
 function get_state {
   # 6 = failed validation of minimum requirements for the script
-  # 5 = box is already running
+  # 5 = service is running
   # 4 = ready to build file structure
   # 3 = ready to build image
-  # 2 = ready to set up LAMP service
+  # 2 = ready to create service
   # 1 = ready to run LAMP service
   # 0 = Lamp Service is Running
 
   STATE=6
   if [ -x "$(command -v podman)" ]; then
-    STATE=5
-    if ! podman container list | grep -q "localhost" || podman container list | grep -q "${SITE_NAME}" || [ $MULTI_BOX -eq 1 ]; then
+    if systemctl --user is-active --quiet "container-${SITE_NAME}.service" >/dev/null 2>&1; then
+      STATE=0
+    else
       STATE=4
-      if [ -d "${SITE_HOME}/.container/log" ]; then
+      if [ -d "${SITE_HOME}/.container" ]; then
         STATE=3
-        if podman images | grep -q "$SITE_NAME"; then
+        if podman image exists "localhost/${SITE_NAME}:private"; then
           STATE=2
-          # if podman ps | grep -q $SITE_NAME && [ -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service" ]; then
           if [ -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service" ]; then
             STATE=1
-            if podman ps | grep -q "$SITE_NAME"; then
-              STATE=0
-            fi
           fi
         fi
       fi
@@ -645,71 +605,63 @@ function no_box_running_message {
 
 # setup local systemd service
 function setup_systemd_service {
-  message "Setting up systemd service..."
+  message "Setting up systemd service directly..."
 
   # create directory if it doesn't exist
   mkdir -p "${HOME}/.config/systemd/user"
 
-  # stop any rogue processes
-  podman stop $SITE_NAME >/dev/null 2>&1
+  # stop and clean up any old container with the same name
+  podman container exists "$SITE_NAME" && podman rm -f "$SITE_NAME"
 
-  # clean up rogue data
-  podman rm $SITE_NAME >/dev/null 2>&1
+  # remove the current container file if it exists
+  rm -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
 
-  # remove the current container file if exists
-  rm -rf "${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
+  # Create a temporary container from which to generate the service file
+  podman create \
+    --name "$SITE_NAME" \
+    --hostname "$HOSTNAME" \
+    --user "${HOST_UID}:${HOST_GID}" \
+    --publish "${HTTP_PORT}:${HTTP_PORT}" \
+    --publish "${SSL_PORT}:${SSL_PORT}" \
+    --publish "${XDEBUG_PORT}:9003" \
+    --volume "${SITE_HOME}:/var/www:Z" \
+    --volume "${SITE_HOME}/.container/sites-enabled:/etc/apache2/sites-enabled:Z" \
+    --volume "${SITE_HOME}/.container/log:/var/log/apache2:Z" \
+    --volume "${SITE_HOME}/.container/mariadb:/var/lib/mysql:Z" \
+    --security-opt "no-new-privileges" \
+    --cap-add "CHOWN,DAC_OVERRIDE,SETGID,SETUID,NET_BIND_SERVICE" \
+    --userns=keep-id \
+    "localhost/${SITE_NAME}:private"
 
-  # container run state parameters
-  RUN_PARAMS=()
-  if [ "${XDEBUG_ENABLE}" == "1" ]; then
-    RUN_PARAMS+=(--network host)
+  # Generate the service file
+  podman generate systemd --new --files --name "$SITE_NAME"
+
+  # Move the generated file to the correct systemd user directory
+  if [ -f "container-${SITE_NAME}.service" ]; then
+    mv "container-${SITE_NAME}.service" "${HOME}/.config/systemd/user/"
+    message "Service file created at ${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
+  else
+    message "❌ ERROR: Failed to generate systemd service file."
+    exit 1
   fi
-  if [ $USE_TMPFS -eq 1 ]; then
-    RUN_PARAMS+=(
-      --tmpfs /etc
-      --tmpfs /usr/lib/systemd/system
-      --tmpfs /var/lib
-      --tmpfs /run/lock
-      --tmpfs /run
-      --tmpfs /tmp
-    )
-  fi
-  RUN_PARAMS+=(
-    -p $HTTP_PORT:80
-    -p $SSL_PORT:443
-    -p $XDEBUG_PORT:9003
-    --hostname $HOSTNAME
-    --name $SITE_NAME
-    -v "${SITE_HOME}:/var/www:Z"
-    -v "${SITE_HOME}/.container/sites-enabled:/etc/apache2/sites-enabled:Z"
-    -v "${SITE_HOME}/.container/log:/var/log/apache2:Z"
-    -v "${SITE_HOME}/.container/mariadb:/var/lib/mysql:Z"
-    --systemd=true
-    -v "/sys/fs/cgroup:/sys/fs/cgroup:ro localhost/${SITE_NAME}:private"
-  )
 
-  # start the service with everything in place
-  podman run -d ${RUN_PARAMS[@]}
-
-  # copy it to a service
-  podman generate systemd --name $SITE_NAME --new >"$HOME/.config/systemd/user/container-${SITE_NAME}.service"
+  # Clean up the temporary container
+  podman rm -f "$SITE_NAME"
 }
 
 # start local systemd service
 function start_systemd_service {
-  message "Starting..."
+  message "Starting enhanced secure services via systemd..."
   systemctl --user daemon-reload
   sleep 2
-  systemctl --user start "container-${SITE_NAME}"
-  # wake maria
-  sleep 5
-  podman exec "${SITE_NAME}" chown root:root /var/lib/mysql
-  podman exec "${SITE_NAME}" service postfix start
-  podman exec "${SITE_NAME}" service memcached start
-  podman exec "${SITE_NAME}" service elasticsearch start
-  podman exec "${SITE_NAME}" service mariadb start
-  podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
-  podman exec "${SITE_NAME}" service apache2 start
+
+  # NEW: Verify that systemd sees the unit file now
+  if ! systemctl --user list-unit-files | grep -q "container-${SITE_NAME}.service"; then
+    message "❌ ERROR: systemd has not recognized the new service file. Please check permissions on ~/.config/systemd/user/"
+    exit 1
+  fi
+
+  systemctl --user enable --now "container-${SITE_NAME}.service"
 }
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -721,6 +673,15 @@ fi
 
 # Download, build and start your LAMP with one commandline
 if [ "$ACTION" == "up" ]; then
+  # NEW: Check for user lingering, which is required for systemd user services
+  if ! loginctl show-user "$(whoami)" | grep -q "Linger=yes"; then
+    message "❌ ERROR: User lingering is not enabled. Rootless containers managed by systemd require this."
+    echo "Please run the following command once to enable it:"
+    echo ""
+    echo "  sudo loginctl enable-linger $(whoami)"
+    echo ""
+    exit 1
+  fi
 
   # what is the current script state
   get_state
@@ -737,46 +698,30 @@ if [ "$ACTION" == "up" ]; then
     echo "For Red Hat Systems"
     echo "sudo dnf module install -y container-tools:3.0"
     echo ""
+    exit 1
   fi
 
-  # already running?
-  if [ $STATE -eq 5 ]; then
-    echo ""
-    echo "WARNING! Another instance of this script may already be running."
-    echo ""
-    podman container list
-    echo ""
-    echo ""
-    while true; do
-      read -p "Do you wish to proceed? (y/n): " yn
-      case $yn in
-      [Yy]*)
-        MULTI_BOX=1
-        break
-        ;;
-      [Nn]*) break ;;
-      *) echo "Please answer y or n." ;;
-      esac
-    done
+  # Destroy and clean up if things are in a weird state from a previous failed run
+  # State 1 is valid (ready to run), so only clean up states 2 and 3
+  if [ $STATE -eq 2 ] || [ $STATE -eq 3 ]; then
+    message "Detected a previous incomplete state. Cleaning up before proceeding..."
+    clean_lamp_container
     get_state
   fi
 
   # builds the container directory
   if [ $STATE -eq 4 ]; then
     build_container_directory
-    # refresh state
     get_state
   fi
 
   # build the image
   if [ $STATE -eq 3 ]; then
     build_image
-    # refresh state
     get_state
   fi
 
   if [ $STATE -eq 2 ]; then
-    # refresh state
     setup_systemd_service
     get_state
   fi
@@ -787,67 +732,103 @@ if [ "$ACTION" == "up" ]; then
     get_state
   fi
 
+  if [ $STATE -eq 0 ] && [ -f "${SITE_HOME}/.container/init.lock" ]; then
+    # Startup Services
+    sleep 5
+    message "Loading Services..."
+    podman exec "${SITE_NAME}" /usr/sbin/postfix start
+    podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
+    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    message "Starting mariadb..."
+    podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
+    while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
+      sleep 2
+      let "_timeout+=1"
+    done
+    # If the socket still doesn't exist, fail with a clear error.
+    if ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ]; then
+      message "❌ MariaDB manual start failed. Check container logs: podman logs ${SITE_NAME}"
+      message "Displaying last 20 lines of the MariaDB log from within the container:"
+      podman exec "${SITE_NAME}" tail -n 20 /var/log/apache2/mariadb.log
+      exit 1
+    fi
+    podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
+    message "Starting apache..."
+    podman exec "${SITE_NAME}" /usr/sbin/apache2ctl -k start
+  fi
+
   # check if lamp has been initialized
   if [ $STATE -eq 0 ] && [ ! -f "${SITE_HOME}/.container/init.lock" ]; then
-    message "Installing LAMP configuration..."
+    message "Running first-time initialization..."
+
+    # STEP 1: Create Apache config files inside the container.
+    # This fixes the original problem.
+    message "Creating default Apache configuration files..."
     podman exec "${SITE_NAME}" bash /var/www/box init
-    _status=false
+
+    # STEP 2: Manually start and prepare MariaDB.
+    # This robust method prevents the service timeouts.
+    message "Initializing MariaDB data directory..."
+    podman exec "${SITE_NAME}" mysql_install_db --user=${CONTAINER_USER} --basedir=/usr --datadir=/var/lib/mysql
+
+    message "Starting MariaDB server manually for setup..."
+    podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
+
+    message "Waiting for MariaDB socket to become available..."
     _timeout=0
-    while $_status -eq false && [ $_timeout -lt 5 ]; do
-      if [ -f "/var/www/.container/init.lock" ]; then
-        _status=true
-      fi
+    while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
       sleep 2
       let "_timeout+=1"
     done
 
-    message "Resetting service..."
-    systemctl --user daemon-reload
-    sleep 2
-    systemctl --user restart "container-${SITE_NAME}.service" >/dev/null 2>&1
+    # If the socket still doesn't exist, fail with a clear error.
+    if ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ]; then
+      message "❌ MariaDB manual start failed. Check container logs: podman logs ${SITE_NAME}"
+      message "Displaying last 20 lines of the MariaDB log from within the container:"
+      podman exec "${SITE_NAME}" tail -n 20 /var/log/apache2/mariadb.log
+      exit 1
+    fi
 
-    # give plenty of time for Maria to waken
-    sleep 5
-    podman exec "${SITE_NAME}" chown root:root /var/lib/mysql
-    podman exec "${SITE_NAME}" mysql_install_db --user=root --basedir=/usr --datadir=/var/lib/mysql
-    podman exec "${SITE_NAME}" service postfix start
-    podman exec "${SITE_NAME}" service memcached start
-    podman exec "${SITE_NAME}" service elasticsearch start
-    podman exec "${SITE_NAME}" service mariadb start
+    # STEP 4: Auxillary Services
+    message "Loading Services"
+    podman exec "${SITE_NAME}" /usr/sbin/postfix start
+    podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
+    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
 
-    podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
-    podman exec "${SITE_NAME}" service apache2 start
-    sleep 5
-
-    echo ""
-    echo "Setting up the databases based on the information"
-    echo "that was entered at the head of this file."
-    echo "This might take a while..."
-    echo ""
+    # STEP 5: Import the database now that the server is confirmed to be running.
+    message "✅ MariaDB is running. Proceeding with database setup."
     podman exec "${SITE_NAME}" bash /var/www/box import_db
+    podman exec "${SITE_NAME}" ln -sf /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
+
+    # STEP 6: Manually start the Apache service:
+    message "Starting Apache service..."
+    podman exec "${SITE_NAME}" /usr/sbin/apache2ctl -k start
+
+    # STEP 7: Create the lock file to prevent this from running again.
+    # The 'init' action inside the container also creates a lock file,
+    # but we create one on the host as the primary check.
+    touch "${SITE_HOME}/.container/init.lock"
   fi
 
   # ready to launch LAMP server
   if [ $STATE -eq 0 ]; then
-    SITE_ACCESS="HTTPS://${SITE_NAME}"
-    if [ "HTTP_PORT" != "443" ]; then SITE_ACCESS="${SITE_ACCESS}:${SSL_PORT}"; fi
     echo ""
     echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
     echo "+                                                                 +"
-    echo "+  Your Debian LAMP is ready...                                   +"
+    echo "+  Your Enhanced Secure Debian LAMP is ready...                   +"
     echo "+                                                                 +"
-    echo "+  Please add the following line to your hosts file:              +"
+    echo "+  Access via:                                                    +"
+    echo "+  HTTP:  http://${SITE_NAME}"
+    echo "+  HTTPS: https://${SITE_NAME}"
+    echo "+                                                                 +"
+    echo "+  Add to your hosts file:                                        +"
     echo "+  127.0.0.1   ${SITE_NAME}"
     echo "+                                                                 +"
-    echo "+  Xdebug has been set up on port: ${XDEBUG_PORT}"
-    echo "+  Memcached on: 11211                                            +"
-    echo "+                                                                 +"
-    echo "+  For Xdebug to work, make sure to open the port (example):      +"
-    echo "+  firewall-cmd --permanent --zone=webserver --add-port=${XDEBUG_PORT}/tcp"
-    echo "+  semanage port -a -t http_port_t -p tcp ${XDEBUG_PORT}"
+    echo "+  Xdebug port: ${XDEBUG_PORT}"
+    echo "+  Memcached port: 11211                                          +"
     echo "+                                                                 +"
     echo "+  All outbound mail is trapped and can be viewed with:           +"
-    echo "+  bash box mail                                           +"
+    echo "+  bash box mail                                                  +"
     echo "+                                                                 +"
     echo "+  See LAMPready.com for more information.                        +"
     echo "+                                                                 +"
@@ -869,6 +850,7 @@ if [ "$ACTION" == "halt" ]; then
     podman stop "${SITE_NAME}" >/dev/null 2>&1
     message "${SITE_NAME} has been halted!"
     echo "" && exit >/dev/null 2>&1
+
   else
     no_box_running_message
   fi
@@ -991,8 +973,7 @@ if [ "$ACTION" == "ssh" ]; then
   get_state
 
   if [ $STATE -eq 0 ]; then
-    podman exec -it "${SITE_NAME}" /bin/bash -c "source /root/.bashrc;"
-    podman exec -it "${SITE_NAME}" env HOME=/root /bin/bash -l
+    podman exec -it "${SITE_NAME}" /bin/bash -l
     echo "" && exit >/dev/null 2>&1
   else
     no_box_running_message
@@ -1003,7 +984,6 @@ fi
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # This is reserved for box deployment from within the
 # container environment.
-
 # export db
 if [ "$ACTION" == "export_db" ]; then
   export_databases

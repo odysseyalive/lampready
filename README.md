@@ -29,6 +29,16 @@ In this example Podman will download the [jrei/systemd-debian](https://hub.docke
 
 It should work on any Linux distribution that runs on [systemd](https://systemd.io/), which is most of them. Both Podman and Buildah will also need installed.
 
+Enhanced Security Features
+---
+
+This version includes several security and usability enhancements:
+
+* Enhanced permission management with proper user mapping instead of running Apache as root
+* Apache now runs on standard ports (80/443) using proper user permissions
+* Files created by the container will have proper ownership matching your host user
+* Container processes run with limited privileges using security options
+
 NOTE: If you receive permission denied notices for vm.max_map_count, run the following
 command from root:
 
@@ -66,6 +76,15 @@ sysctl --system
 sysctl net.ipv4.ip_unprivileged_port_start=0
 ```
 
+User Linger Required
+---
+
+Rootless containers managed by systemd require user lingering to be enabled. Before running `bash box up`, you'll need to enable it for your user:
+
+```
+sudo loginctl enable-linger $USER
+```
+
 How to Use Debian LAMPready
 ---
 
@@ -78,15 +97,12 @@ curl https://raw.githubusercontent.com/odysseyalive/lampready/refs/heads/master/
 ```
 
 **PLEASE NOTE:** Be sure to review the notes at the head of the box script.
-Xdebug is disabled by default. This box is designed to run container processes
-with root permission -- which includes Apache!  Less than optimal, right?!
+Xdebug is disabled by default but can be enabled for debugging.
 
-The rootless container is the only way to preserve the proper permissions
-of shared files.  The upside is that this temporary web server will run
+The rootless container now uses proper user mapping to preserve the proper permissions
+of shared files while running services with appropriate user permissions rather than root.
+The upside is that this temporary web server will run
 ***much more efficiently*** than most other local VM solutions!
-
-***In order for Xdebug to work as intended, some local network information is
-exposed when enabling it.***
 
 As you will notice further on, this script's commands closely model
 [Vagrant](https://www.vagrantup.com/).  The advantage of running a container
@@ -237,6 +253,15 @@ error settings throughout the code.
 This is another setting that can help ensure all PHP errors are described
 in the browser.
 
+**XDEBUG_DISPLAY_MAX_DATA:**
+Controls the maximum string length that will be shown in var_dump() output.
+
+**XDEBUG_DISPLAY_MAX_DEPTH:**
+Controls the maximum nested array/object depth that will be shown in var_dump() output.
+
+**XDEBUG_DISPLAY_MAX_CHILDREN:**
+Controls the maximum number of array/object children that will be shown in var_dump() output.
+
 **DB1:**
 The script can automatically set up and install any number of MySQL databases.
 By filling out this information, the script will create the database and inject
@@ -271,6 +296,11 @@ the script resides.
 
 **DB_CUSTOM_FUNCTIONS:**
 This option is generally reserved for importing custom database functions.
+
+**CONTAINER_USER, CONTAINER_UID, CONTAINER_GID:**
+Enhanced permission management allows you to specify the user account that will run
+services inside the container. By default, the container will map to your host user
+for seamless file sharing.
 
 How to Use this Box?
 ---
@@ -418,13 +448,12 @@ let g:vdebug_features = {
 \}
 ```
 
-Why Apache Runs as Root (And Why That's OK for Development)
+Enhanced Security with Proper User Mapping
 ---
 
-This development environment runs Apache as the root user, which is probably
-making some of you cringe right now. I get it. But there's a method to this madness.
+This development environment uses proper user mapping instead of running Apache as root, which provides enhanced security while maintaining the convenience of seamless file sharing between host and container.
 
-**The Problem I Wanted to Solve**
+**The Problem That Was Solved**
 
 When you're working with containers and trying to share files between your host
 machine and the container, you run into this annoying permission nightmare:
@@ -435,74 +464,37 @@ machine and the container, you run into this annoying permission nightmare:
   files that Apache creates, and you spend more time fighting permissions than
   actually developing
 
-**How I Solved It**
+**How It's Solved Now**
 
-For the Debian version, I simplified this by just running Apache as root inside
-the container. No custom compilation needed - just some configuration changes.
+The enhanced version of this script implements proper user mapping, which allows:
 
-If you really want to build a custom Apache binary with the `BIG_SECURITY_HOLE`
-flag (like the Ubuntu version of Lampready used to do), here's how you'd do it on Debian 12:
+* Services inside the container to run with appropriate user permissions
+* Seamless file sharing between host and container with correct ownership
+* Enhanced security by avoiding root privileges for web services
+* Proper isolation while maintaining development convenience
 
-```bash
-# Step 1: Add source repositories with proper signing keys
-cat >> /etc/apt/sources.list << 'EOF'
-deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm main
-deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian-security bookworm-security main  
-deb-src [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm-updates main
-EOF
+**CONTAINER_USER, CONTAINER_UID, CONTAINER_GID Settings**
 
-# Step 2: Update and install build dependencies
-apt update -y
-apt build-dep -y apache2
-apt install -y fakeroot
+You can now customize the user account that will run services inside the container
+using the CONTAINER_USER, CONTAINER_UID, and CONTAINER_GID settings. By default,
+the container will map to your host user for seamless file sharing.
 
-# Step 3: Get and modify the source
-apt source apache2
-cd /apache2-2.4.*
-sed -i 's/DEB_CFLAGS_MAINT_APPEND = -pipe -Wall/DEB_CFLAGS_MAINT_APPEND = -pipe -Wall -DBIG_SECURITY_HOLE/' debian/rules
+**Benefits of This Approach**
 
-# Step 4: Build and install custom package
-dpkg-buildpackage -rfakeroot -uc -b
-cd ..
-dpkg -i apache2-bin_*.deb
-apt-mark hold apache2-bin
+* Services run with appropriate permissions rather than as root
+* Files created by the container maintain proper ownership matching your host user
+* Enhanced security while preserving development convenience
+* No more permission headaches when accessing files from both host and container
 
-# Step 5: Clean up (remove source repositories and build files)
-sed -i '/deb-src.*signed-by.*bookworm/d' /etc/apt/sources.list
-apt update
-rm -rf /apache2-*
+**Why This is Better for Development and Security**
 
-```
+This approach provides the best of both worlds:
 
-But honestly? I don't bother with that anymore. The script just configures
-regular Apache to run as root, and it works great for development.
-
-**Why This is Actually Fine for Development**
-
-Look, I'm not some cowboy who doesn't care about security. Here's why this
-setup makes sense:
-
-* Your container is isolated - it's not like you're exposing this to the internet
+* Your container is properly isolated with appropriate user permissions
 * It's temporary - you destroy it when you're done working
-* It solves a real problem - no more permission headaches
+* It solves real problems - no more permission headaches
 * You can actually focus on developing instead of fighting with file ownership
-
-**Why You Should Never Do This in Production**
-
-But let me be crystal clear: ***DO NOT DO THIS IN PRODUCTION***. Ever.
-
-A compromised web server running as root can own your entire system. That's bad.
-Very bad.
-
-**The Bottom Line**
-
-This is a development tool. It's meant to make your life easier while you're
-building and testing code. It's not meant to go anywhere near a production
-server.
-
-If you're the type who gets nervous about running Apache as root even in
-development, that's actually good! Keep that security mindset. Just understand
-that sometimes we make trade-offs for productivity, and this is one of those times.
+* Enhanced security by avoiding unnecessary root privileges
 
 ---
 
