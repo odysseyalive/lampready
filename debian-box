@@ -73,6 +73,36 @@ HOST_USER=$(whoami)
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # # functions
 
+# Check if required ports are available
+function check_ports {
+  _http_port_check=$(ss -tulnp 2>/dev/null | grep ":${HTTP_PORT} " | wc -l)
+  _ssl_port_check=$(ss -tulnp 2>/dev/null | grep ":${SSL_PORT} " | wc -l)
+
+  if [ $_http_port_check -gt 0 ] || [ $_ssl_port_check -gt 0 ]; then
+    echo ""
+    echo "❌ PORT CHECK FAILED: One or more required ports are already in use:"
+    if [ $_http_port_check -gt 0 ]; then
+      echo "   Port ${HTTP_PORT} (HTTP) is already in use"
+      ss -tulnp 2>/dev/null | grep ":${HTTP_PORT} " | while read line; do
+        echo "   - $line"
+      done
+    fi
+    if [ $_ssl_port_check -gt 0 ]; then
+      echo "   Port ${SSL_PORT} (SSL) is already in use"
+      ss -tulnp 2>/dev/null | grep ":${SSL_PORT} " | while read line; do
+        echo "   - $line"
+      done
+    fi
+    echo ""
+    echo "Please stop the processes using these ports before starting the container."
+    echo "You can use 'ss -tulnp | grep :${HTTP_PORT}' or 'ss -tulnp | grep :${SSL_PORT}' to identify the processes."
+    echo "If a Lampready container is already running, use bash box ps to identify it."
+    echo "Enter the project directory and use bash box halt to stop it."
+    echo ""
+    exit 1
+  fi
+}
+
 # builds the container directory
 function build_container_directory {
   message "Building container directory at ${SITE_HOME}/.container ..."
@@ -682,6 +712,12 @@ if [ "$ACTION" == "up" ]; then
     echo ""
     exit 1
   fi
+
+  # Check if required ports are available before proceeding
+  check_ports
+
+  # Check if required ports are available before proceeding
+  check_ports
 
   # what is the current script state
   get_state
