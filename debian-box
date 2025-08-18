@@ -16,6 +16,7 @@
 HOSTNAME="lampready.com"
 SUB_DOMAIN="dev"
 PUBLIC_ROOT_PATH="public_html"
+START_ON_SYSTEM_BOOT="0"
 
 HTTP_PORT="80"
 SSL_PORT="443"
@@ -203,10 +204,7 @@ function build_image {
   # modules
   _modules="nodejs python3 python3-pip ruby"
 
-  _npm_install="curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash; \
-        echo \"nvm install v18.20.4\" >> /root/.bashrc; \
-        echo \"npm install --location=global --save-dev grunt-cli gulp gulp-cli yarn\" >> /root/.bashrc; \
-		"
+  _npm_install='su - '"${CONTAINER_USER}"' -c "export NVM_DIR=\$HOME/.nvm; curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash; source \$NVM_DIR/nvm.sh; nvm install v18.20.4; npm install --location=global --save-dev grunt-cli gulp gulp-cli yarn;"'
 
   # composer
   _composer="curl https://getcomposer.org/composer-stable.phar -o /usr/local/bin/composer; \
@@ -300,7 +298,7 @@ function build_image {
         printf \"/.+@.+/ root\" > /etc/postfix/virtual-regexp; \
         "
 
-  _xdebug_config="printf \"xdebug.mode=develop,debug\nxdebug.start_with_request=yes\nxdebug.scream=${XDEBUG_SCREAM}\nxdebug.var_display_max_data=${XDEBUG_DISPLAY_MAX_DATA}\nxdebug.var_display_max_depth=${XDEBUG_DISPLAY_MAX_DEPTH}\nxdebug.var_display_max_children=${XDEBUG_DISPLAY_MAX_CHILDREN}\nxdebug.cli_color=1\nxdebug.log='/var/log/apache2/xdebug.log'\nxdebug.force_display_errors=${XDEBUG_FORCE_DISPLAY_ERRORS}\" >> /etc/php/${PHP_VERSION}/apache2/conf.d/20-xdebug.ini; \
+  _xdebug_config="printf \"xdebug.mode=develop,debug\nxdebug.start_with_request=yes\nxdebug.scream=${XDEBUG_SCREAM}\nxdebug.var_display_max_data=${XDEBUG_DISPLAY_MAX_DATA}\nxdebug.var_display_max_depth=${XDEBUG_DISPLAY_MAX_DEPTH}\nxdebug.var_display_max_children=${XDEBUG_DISPLAY_MAX_CHILDREN}\nxdebug.cli_color=1\nxdebug.log='/var/log/apache2/xdebug.log'\nxdebug.force_display_errors=${XDEBUG_FORCE_DISPLAY_ERRORS}\nxdebug.client_host=host.containers.internal\nxdebug.client_port=${XDEBUG_PORT}\" >> /etc/php/${PHP_VERSION}/apache2/conf.d/20-xdebug.ini; \
         "
 
   # build the image in docker style
@@ -651,9 +649,8 @@ function setup_systemd_service {
     --name "$SITE_NAME" \
     --hostname "$HOSTNAME" \
     --user "${HOST_UID}:${HOST_GID}" \
-    --publish "${HTTP_PORT}:${HTTP_PORT}" \
-    --publish "${SSL_PORT}:${SSL_PORT}" \
-    --publish "${XDEBUG_PORT}:9003" \
+    --publish "${HTTP_PORT}:80" \
+    --publish "${SSL_PORT}:443" \
     --volume "${SITE_HOME}:/var/www:Z" \
     --volume "${SITE_HOME}/.container/sites-enabled:/etc/apache2/sites-enabled:Z" \
     --volume "${SITE_HOME}/.container/log:/var/log/apache2:Z" \
@@ -691,7 +688,11 @@ function start_systemd_service {
     exit 1
   fi
 
-  systemctl --user enable --now "container-${SITE_NAME}.service"
+  if [ "$START_ON_SYSTEM_BOOT" = "1" ]; then
+    systemctl --user enable --now "container-${SITE_NAME}.service"
+  else
+    systemctl --user start "container-${SITE_NAME}.service"
+  fi
 }
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # #
@@ -1009,6 +1010,7 @@ if [ "$ACTION" == "ssh" ]; then
   get_state
 
   if [ $STATE -eq 0 ]; then
+    podman exec -it "${SITE_NAME}" /bin/bash -c "source /root/.bashrc;"
     podman exec -it "${SITE_NAME}" /bin/bash -l
     echo "" && exit >/dev/null 2>&1
   else
