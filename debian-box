@@ -212,6 +212,11 @@ function build_image {
         echo \"alias composer='env COMPOSER_ALLOW_SUPERUSER=1 composer'\" >> /root/.bashrc; \
         "
 
+  # WP CLI
+  _wp_cli="curl https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp; \
+    chmod +x /usr/local/bin/wp; \
+    "
+
   # apache
   _apache="apache2 openssl ssl-cert"
 
@@ -335,6 +340,7 @@ function build_image {
     echo "RUN apt-get install -y ${_modules}" >>$_file
     echo "RUN ${_npm_install}" >>$_file
     echo "RUN ${_composer}" >>$_file
+    echo "RUN ${_wp_cli}" >>$_file
   fi
 
   # set server time
