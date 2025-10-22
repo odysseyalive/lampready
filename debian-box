@@ -212,10 +212,8 @@ function build_image {
         echo \"alias composer='env COMPOSER_ALLOW_SUPERUSER=1 composer'\" >> /root/.bashrc; \
         "
 
-  # WP CLI
-  _wp_cli="curl https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp; \
-    chmod +x /usr/local/bin/wp; \
-    "
+  # yadrlite
+  _yadrlite='su - '"${CONTAINER_USER}"' -c "bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/odysseyalive/dotfiles/master/setup)\"; bash ~/.yadrlite/setup tools;"'
 
   # apache
   _apache="apache2 openssl ssl-cert"
@@ -323,7 +321,6 @@ function build_image {
   echo "RUN apt-get install -y ${_tools}" >>$_file
   echo "RUN ${_php_repo}" >>$_file
   echo "RUN apt-get install -y ${_apache} ${_mariadb} ${_php}" >>$_file
-  echo "RUN apt-get install -y postfix" >>$_file
   echo "RUN ${_openssl}" >>$_file
 
   # Use enhanced Apache configuration instead of custom build
@@ -340,7 +337,7 @@ function build_image {
     echo "RUN apt-get install -y ${_modules}" >>$_file
     echo "RUN ${_npm_install}" >>$_file
     echo "RUN ${_composer}" >>$_file
-    echo "RUN ${_wp_cli}" >>$_file
+    echo "RUN ${_yadrlite}" >>$_file
   fi
 
   # set server time
@@ -779,7 +776,7 @@ if [ "$ACTION" == "up" ]; then
     # Startup Services
     sleep 5
     message "Loading Services..."
-    podman exec "${SITE_NAME}" /usr/sbin/postfix start
+    podman exec --user root "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
     podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
     message "Starting mariadb..."
@@ -834,7 +831,7 @@ if [ "$ACTION" == "up" ]; then
 
     # STEP 4: Auxillary Services
     message "Loading Services"
-    podman exec "${SITE_NAME}" /usr/sbin/postfix start
+    podman exec --user root "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
     podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
 
@@ -949,7 +946,7 @@ if [ "$ACTION" == "mail" ]; then
   get_state
 
   if [ $STATE -eq 0 ]; then
-    podman exec -it "${SITE_NAME}" bash /var/www/box mutt
+    podman exec -it --user root "${SITE_NAME}" mutt
     echo "" && exit >/dev/null 2>&1
   else
     no_box_running_message
