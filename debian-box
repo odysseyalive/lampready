@@ -833,7 +833,7 @@ if [ "$ACTION" == "up" ]; then
     message "Loading Services"
     podman exec --user root "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    podman exec --user elasticsearch "${SITE_NAME}" bash -c 'ES_JAVA_OPTS="-Dsecurity.manager=false" /usr/share/elasticsearch/bin/elasticsearch -d'
 
     # STEP 5: Import the database now that the server is confirmed to be running.
     message "✅ MariaDB is running. Proceeding with database setup."
