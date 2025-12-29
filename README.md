@@ -340,10 +340,62 @@ bash box ssh
 bash box ps 
 ```
 
-**to destroy all LAMPReady installations:**
+**pull a fresh base image:**
 
 ```
-bash box reset 
+bash box reset
+```
+
+**rebuild site with fresh base image (preserves data):**
+
+```
+bash box rebuild
+```
+
+Troubleshooting: Container Fails to Start
+---
+
+If an existing container fails to start after a system update or base image change, the issue is likely that your site image was built with an older version of the Debian base image. The solution is to pull the fresh base image and rebuild your site.
+
+**Step 1: Pull the fresh base image**
+
+Run this once from any project directory:
+
+```
+bash box reset
+```
+
+This will download the latest `docker.io/jrei/systemd-debian:12` image without affecting your project files or database.
+
+**Step 2: Rebuild each project**
+
+Navigate to each project directory and rebuild:
+
+```
+cd /path/to/your-project
+bash box rebuild
+```
+
+The rebuild command will:
+* Stop the running container (if any)
+* Remove the old site image
+* Rebuild with the fresh base image
+* Start all services (Apache, MariaDB, etc.)
+* **Preserve your database, site files, and Apache configs**
+
+**Important Notes:**
+* `reset` only affects the base Debian image — your projects stay intact
+* `rebuild` recreates the site image but preserves all data in `.container/`
+* `destroy` wipes everything including your database — use with caution
+
+**Typical workflow when things break:**
+
+```
+bash box reset              # Pull fresh base image (run once)
+cd /path/to/site1
+bash box rebuild            # Rebuild site1 with new base
+cd /path/to/site2
+bash box rebuild            # Rebuild site2 with new base
 ```
 
 Dap-Mode for Emacs

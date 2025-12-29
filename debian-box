@@ -421,7 +421,8 @@ function display_help {
   echo "bash box mail        view mail in mail trap"
   echo "bash box mysql       enter mysql prompt"
   echo "bash box ps          list running containers"
-  echo "bash box reset       the emergency panic button - see notes below"
+  echo "bash box rebuild     rebuild site image with fresh base (preserves data)"
+  echo "bash box reset       pull fresh base image - see notes below"
   echo "bash box ssh         enter the container commandline"
   echo ""
   echo "ENHANCED SECURITY FEATURES:"
@@ -485,19 +486,21 @@ function display_help {
   echo "${SITE_HOME}/.container/sites-enabled"
   echo "${SITE_HOME}/${PUBLIC_ROOT_PATH}"
   echo ""
-  echo "WHY DO I USE THE RESET OPTION FOR?"
-  echo "Don't confuse the reset option with the destroy command. Destroy wipes a project clean."
-  echo "Reset wipes out everything you've done with podman. It essentially destroys all projects"
-  echo "including the master image, so be careful with it. You might have other projects that are"
-  echo "not related to this script that will also be removed."
+  echo "RESET AND REBUILD:"
+  echo "Don't confuse reset with destroy. Destroy wipes a project clean."
   echo ""
-  echo "From time to time, a reoccurring error appears during the build phase, 'error copying"
-  echo "layers and metadata for container'. This error is not based on any dangling processes"
-  echo "or bad images. The reset option is just a quick way around the issue, allowing you to"
-  echo "move forward quickly in setting up a new project -- at the cost of trashing any existing"
-  echo "projects that are working. In most cases, this script doesn't take long spinning up new"
-  echo "images. A quick reset is not that much of a disadvantage when considering time and"
-  echo "deadlines."
+  echo "Reset pulls a fresh copy of the base Debian image (${IMAGE})."
+  echo "It does NOT delete your project files, database, or site images."
+  echo ""
+  echo "After running reset, use 'bash box rebuild' in each project directory to"
+  echo "rebuild the site image with the fresh base. Your data will be preserved."
+  echo ""
+  echo "Typical workflow when base image needs updating:"
+  echo "  1. bash box reset     (pulls fresh base image)"
+  echo "  2. cd /path/to/site1"
+  echo "  3. bash box rebuild   (rebuilds site1 with new base)"
+  echo "  4. cd /path/to/site2"
+  echo "  5. bash box rebuild   (rebuilds site2 with new base)"
   echo ""
   echo "SECURITY IMPROVEMENTS:"
   echo "This version uses proper user mapping and standard ports for Apache."
@@ -975,9 +978,8 @@ fi
 
 # emergency reset
 if [ $ACTION == "reset" ]; then
-  podman images 2>/dev/null
   echo ""
-  echo "WARNING! This will destroy all images listed above and their associated containers."
+  echo "WARNING! This will destroy the base image (${IMAGE}) and this project's container."
   accept_reset=false
   while true; do
     read -p "Do you wish to continue? (y/n): " yn
@@ -993,18 +995,95 @@ if [ $ACTION == "reset" ]; then
 
   if $accept_reset -eq true; then
     get_state
-    clean_lamp_container
-    clean_container_directory
-    podman system prune --all --force
-    podman rmi --all --force
+    if [ $STATE -eq 0 ]; then
+      message "Stopping container..."
+      systemctl --user stop "container-${SITE_NAME}.service" >/dev/null 2>&1
+    fi
+    podman rmi "${IMAGE}" --force 2>/dev/null
+    message "Pulling the latest base image..."
+    podman pull "${IMAGE}"
     echo ""
-    echo "You may need to manually clean any other deployments of this script"
-    echo "with 'bash box destroy', or manually remove the .container directory."
+    message "Reset complete."
     echo ""
-    message "Everything has been reset"
+    echo "IMPORTANT: To use the new base image, run 'bash box rebuild' in each"
+    echo "project directory. Your database and site files will be preserved."
   else
     message "nothing happened"
   fi
+  echo "" && exit >/dev/null 2>&1
+fi
+
+# Rebuild site image with fresh base (preserves data)
+if [ "$ACTION" == "rebuild" ]; then
+  get_state
+
+  if [ $STATE -eq 6 ]; then
+    message "Nothing to rebuild. Run 'bash box up' first to create a project."
+    exit 1
+  fi
+
+  if [ ! -d "${SITE_HOME}/.container" ]; then
+    message "No .container directory found. Run 'bash box up' first."
+    exit 1
+  fi
+
+  message "Rebuilding ${SITE_NAME} with fresh base image..."
+  message "Your database and site files will be preserved."
+
+  # Stop container if running
+  if [ $STATE -eq 0 ]; then
+    message "Stopping container..."
+    systemctl --user stop "container-${SITE_NAME}.service" >/dev/null 2>&1
+    podman stop "${SITE_NAME}" >/dev/null 2>&1
+  fi
+
+  # Remove container if exists
+  if podman container exists $SITE_NAME; then
+    podman rm $SITE_NAME >/dev/null 2>&1
+  fi
+
+  # Remove site image
+  if podman image exists "localhost/${SITE_NAME}:private"; then
+    message "Removing old site image..."
+    podman rmi "localhost/${SITE_NAME}:private" >/dev/null 2>&1
+  fi
+
+  # Remove systemd service file
+  if [ -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service" ]; then
+    rm -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
+    systemctl --user daemon-reload
+    sleep 2
+  fi
+
+  # Rebuild image
+  build_image
+
+  # Setup and start service
+  setup_systemd_service
+  start_systemd_service
+
+  # Start services (init.lock exists, so this is the restart path)
+  get_state
+  if [ $STATE -eq 0 ]; then
+    sleep 5
+    message "Loading services..."
+    podman exec --user root "${SITE_NAME}" /usr/sbin/postfix start
+    podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
+    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    message "Starting mariadb..."
+    podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
+    _timeout=0
+    while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
+      sleep 2
+      let "_timeout+=1"
+    done
+    podman exec "${SITE_NAME}" ln -sf /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
+    message "Starting apache..."
+    podman exec "${SITE_NAME}" /usr/sbin/apache2ctl -k start
+  fi
+
+  echo ""
+  message "Rebuild complete! ${SITE_NAME} is now running with the fresh base image."
   echo "" && exit >/dev/null 2>&1
 fi
 
