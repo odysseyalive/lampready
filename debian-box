@@ -221,6 +221,8 @@ function build_image {
   # Enhanced Apache configuration with proper user mapping
   _apache_config="groupadd -g ${CONTAINER_GID} ${CONTAINER_USER} && \
     useradd -u ${CONTAINER_UID} -g ${CONTAINER_GID} -m -s /bin/bash ${CONTAINER_USER} && \
+    usermod -aG sudo ${CONTAINER_USER} && \
+    echo \"${CONTAINER_USER} ALL=(ALL) NOPASSWD:ALL\" >> /etc/sudoers && \
     a2enmod ssl rewrite headers && \
     sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf && \
     sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=${CONTAINER_USER}@g\" /etc/apache2/envvars && \
