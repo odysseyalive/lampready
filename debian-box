@@ -212,8 +212,10 @@ function build_image {
         echo \"alias composer='env COMPOSER_ALLOW_SUPERUSER=1 composer'\" >> /root/.bashrc; \
         "
 
-  # yadrlite
-  _yadrlite='su - '"${CONTAINER_USER}"' -c "bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/odysseyalive/dotfiles/master/setup)\"; bash ~/.yadrlite/setup tools;"'
+  # WP CLI
+  _wp_cli="curl https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp; \
+    chmod +x /usr/local/bin/wp; \
+    "
 
   # apache
   _apache="apache2 openssl ssl-cert"
@@ -221,10 +223,6 @@ function build_image {
   # Enhanced Apache configuration with proper user mapping
   _apache_config="groupadd -g ${CONTAINER_GID} ${CONTAINER_USER} && \
     useradd -u ${CONTAINER_UID} -g ${CONTAINER_GID} -m -s /bin/bash ${CONTAINER_USER} && \
-    usermod -aG sudo ${CONTAINER_USER} && \
-    echo \"${CONTAINER_USER} ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/${CONTAINER_USER} && \
-    chmod 440 /etc/sudoers.d/${CONTAINER_USER} && \
-    chgrp ${CONTAINER_USER} /usr/local/bin && chmod 775 /usr/local/bin && \
     a2enmod ssl rewrite headers && \
     sed -i \"/^# Global configuration/a ServerName ${HOSTNAME}\" /etc/apache2/apache2.conf && \
     sed -i \"s@export APACHE_RUN_USER.*@export APACHE_RUN_USER=${CONTAINER_USER}@g\" /etc/apache2/envvars && \
@@ -303,7 +301,6 @@ function build_image {
         sed -i \"s@myhostname =.*@myhostname = ${HOSTNAME}@g\" /etc/postfix/main.cf; \
         printf \"smtpd_use_tls = no\\nvirtual_maps = regexp:/etc/postfix/virtual-regexp\\nmaillog_file=/var/log/apache2/mail.log\" >> /etc/postfix/main.cf; \
         printf \"/.+@.+/ root\" > /etc/postfix/virtual-regexp; \
-        touch /var/log/apache2/mail.log && chmod 666 /var/log/apache2/mail.log; \
         "
 
   _xdebug_config="printf \"xdebug.mode=develop,debug\nxdebug.start_with_request=yes\nxdebug.scream=${XDEBUG_SCREAM}\nxdebug.var_display_max_data=${XDEBUG_DISPLAY_MAX_DATA}\nxdebug.var_display_max_depth=${XDEBUG_DISPLAY_MAX_DEPTH}\nxdebug.var_display_max_children=${XDEBUG_DISPLAY_MAX_CHILDREN}\nxdebug.cli_color=1\nxdebug.log='/var/log/apache2/xdebug.log'\nxdebug.force_display_errors=${XDEBUG_FORCE_DISPLAY_ERRORS}\nxdebug.client_host=host.containers.internal\nxdebug.client_port=${XDEBUG_PORT}\" >> /etc/php/${PHP_VERSION}/apache2/conf.d/20-xdebug.ini; \
@@ -326,6 +323,7 @@ function build_image {
   echo "RUN apt-get install -y ${_tools}" >>$_file
   echo "RUN ${_php_repo}" >>$_file
   echo "RUN apt-get install -y ${_apache} ${_mariadb} ${_php}" >>$_file
+  echo "RUN apt-get install -y postfix" >>$_file
   echo "RUN ${_openssl}" >>$_file
 
   # Use enhanced Apache configuration instead of custom build
@@ -342,7 +340,7 @@ function build_image {
     echo "RUN apt-get install -y ${_modules}" >>$_file
     echo "RUN ${_npm_install}" >>$_file
     echo "RUN ${_composer}" >>$_file
-    echo "RUN ${_yadrlite}" >>$_file
+    echo "RUN ${_wp_cli}" >>$_file
   fi
 
   # set server time
@@ -426,8 +424,7 @@ function display_help {
   echo "bash box mail        view mail in mail trap"
   echo "bash box mysql       enter mysql prompt"
   echo "bash box ps          list running containers"
-  echo "bash box rebuild     rebuild site image with fresh base (preserves data)"
-  echo "bash box reset       pull fresh base image - see notes below"
+  echo "bash box reset       the emergency panic button - see notes below"
   echo "bash box ssh         enter the container commandline"
   echo ""
   echo "ENHANCED SECURITY FEATURES:"
@@ -491,21 +488,19 @@ function display_help {
   echo "${SITE_HOME}/.container/sites-enabled"
   echo "${SITE_HOME}/${PUBLIC_ROOT_PATH}"
   echo ""
-  echo "RESET AND REBUILD:"
-  echo "Don't confuse reset with destroy. Destroy wipes a project clean."
+  echo "WHY DO I USE THE RESET OPTION FOR?"
+  echo "Don't confuse the reset option with the destroy command. Destroy wipes a project clean."
+  echo "Reset wipes out everything you've done with podman. It essentially destroys all projects"
+  echo "including the master image, so be careful with it. You might have other projects that are"
+  echo "not related to this script that will also be removed."
   echo ""
-  echo "Reset pulls a fresh copy of the base Debian image (${IMAGE})."
-  echo "It does NOT delete your project files, database, or site images."
-  echo ""
-  echo "After running reset, use 'bash box rebuild' in each project directory to"
-  echo "rebuild the site image with the fresh base. Your data will be preserved."
-  echo ""
-  echo "Typical workflow when base image needs updating:"
-  echo "  1. bash box reset     (pulls fresh base image)"
-  echo "  2. cd /path/to/site1"
-  echo "  3. bash box rebuild   (rebuilds site1 with new base)"
-  echo "  4. cd /path/to/site2"
-  echo "  5. bash box rebuild   (rebuilds site2 with new base)"
+  echo "From time to time, a reoccurring error appears during the build phase, 'error copying"
+  echo "layers and metadata for container'. This error is not based on any dangling processes"
+  echo "or bad images. The reset option is just a quick way around the issue, allowing you to"
+  echo "move forward quickly in setting up a new project -- at the cost of trashing any existing"
+  echo "projects that are working. In most cases, this script doesn't take long spinning up new"
+  echo "images. A quick reset is not that much of a disadvantage when considering time and"
+  echo "deadlines."
   echo ""
   echo "SECURITY IMPROVEMENTS:"
   echo "This version uses proper user mapping and standard ports for Apache."
@@ -561,11 +556,45 @@ function import_databases {
           # modifications for development site name designation
           if [ "${var[DB_TYPE]}" == "wordpress" ]; then
             WPQ1=$(mysql -N -e "use ${var[DB_NAME]}; SELECT option_value FROM ${var[DB_PREFIX]}options WHERE option_name = 'siteurl'")
-            WPA1=$(sed -E "s@(:\/\/([a-zA-Z0-9\-]*\.)?([a-zA-Z0-9\-]*)\.([a_zA-Z0-9\-]*))(\.[a-zA-Z0-9\-]*)?\/?@://${SITE_NAME}@" <<<$WPQ1)
-            mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}options SET option_value = '${WPA1}' WHERE option_name = 'siteurl' OR option_name = 'home'"
-            mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}posts SET guid = replace(guid, '${WPQ1}','${WPA1}')"
-            mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}posts SET post_content = replace(post_content, '${WPQ1}', '${WPA1}')"
-            mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}postmeta SET meta_value = replace(meta_value,'${WPQ1}','${WPA1}')"
+            WPA1=$(sed -E "s@(:\/\/([a-zA-Z0-9\-]*\.)?([a-zA-Z0-9\-]*)\.([a-zA-Z0-9\-]*))(\.[a-zA-Z0-9\-]*)?\/?@://${SITE_NAME}@" <<<$WPQ1)
+
+            if [ "$WPQ1" == "$WPA1" ]; then
+              message "Site URL already matches ${SITE_NAME}, skipping search-replace."
+            elif command -v wp >/dev/null 2>&1; then
+              # WP-CLI: handles serialized data, covers all tables including plugin tables
+              message "Replacing URLs using WP-CLI: ${WPQ1} → ${WPA1}"
+              wp search-replace "$WPQ1" "$WPA1" \
+                --path="/var/www/${PUBLIC_ROOT_PATH}" \
+                --all-tables-with-prefix \
+                --skip-columns=guid \
+                --recurse-objects \
+                --allow-root \
+                --quiet
+
+              # second pass: catch http/https variant
+              WPQ1_ALT=$(echo "$WPQ1" | sed 's|^https://|http://|;t;s|^http://|https://|')
+              WPA1_ALT=$(echo "$WPA1" | sed 's|^https://|http://|;t;s|^http://|https://|')
+              wp search-replace "$WPQ1_ALT" "$WPA1_ALT" \
+                --path="/var/www/${PUBLIC_ROOT_PATH}" \
+                --all-tables-with-prefix \
+                --skip-columns=guid \
+                --recurse-objects \
+                --allow-root \
+                --quiet 2>/dev/null
+
+              # flush caches and rewrite rules
+              wp cache flush --path="/var/www/${PUBLIC_ROOT_PATH}" --allow-root --quiet 2>/dev/null
+              wp rewrite flush --path="/var/www/${PUBLIC_ROOT_PATH}" --allow-root --quiet 2>/dev/null
+            else
+              # fallback: raw SQL for environments without WP-CLI (does not handle serialized data)
+              message "WP-CLI not found, falling back to SQL replace (serialized data may be affected)"
+              mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}options SET option_value = '${WPA1}' WHERE option_name = 'siteurl' OR option_name = 'home'"
+              mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}posts SET post_content = replace(post_content, '${WPQ1}', '${WPA1}')"
+              mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}postmeta SET meta_value = replace(meta_value,'${WPQ1}','${WPA1}')"
+              mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}comments SET comment_content = replace(comment_content,'${WPQ1}','${WPA1}')"
+              mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}comments SET comment_author_url = replace(comment_author_url,'${WPQ1}','${WPA1}')"
+              mysql -e "USE ${var[DB_NAME]}; UPDATE ${var[DB_PREFIX]}termmeta SET meta_value = replace(meta_value,'${WPQ1}','${WPA1}')"
+            fi
           fi
           if [ "${var[DB_TYPE]}" == "magento_1" ]; then
             echo "Setting up Magento..."
@@ -784,9 +813,9 @@ if [ "$ACTION" == "up" ]; then
     # Startup Services
     sleep 5
     message "Loading Services..."
-    podman exec --user root "${SITE_NAME}" bash -c "rm -f /var/spool/postfix/maildrop/* 2>/dev/null; /usr/sbin/postfix start"
+    podman exec "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch "${SITE_NAME}" bash -c 'ES_JAVA_OPTS="-Djava.locale.providers=CLDR" /usr/share/elasticsearch/bin/elasticsearch -d'
+    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
     message "Starting mariadb..."
     podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
     while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
@@ -817,7 +846,7 @@ if [ "$ACTION" == "up" ]; then
     # STEP 2: Manually start and prepare MariaDB.
     # This robust method prevents the service timeouts.
     message "Initializing MariaDB data directory..."
-    podman exec "${SITE_NAME}" mysql_install_db --user=${CONTAINER_USER} --basedir=/usr --datadir=/var/lib/mysql 2>&1 | grep -v "auth_pam_tool"
+    podman exec "${SITE_NAME}" mysql_install_db --user=${CONTAINER_USER} --basedir=/usr --datadir=/var/lib/mysql
 
     message "Starting MariaDB server manually for setup..."
     podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
@@ -839,14 +868,14 @@ if [ "$ACTION" == "up" ]; then
 
     # STEP 4: Auxillary Services
     message "Loading Services"
-    podman exec --user root "${SITE_NAME}" bash -c "rm -f /var/spool/postfix/maildrop/* 2>/dev/null; /usr/sbin/postfix start"
+    podman exec "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch "${SITE_NAME}" bash -c 'ES_JAVA_OPTS="-Djava.locale.providers=CLDR" /usr/share/elasticsearch/bin/elasticsearch -d'
+    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
 
     # STEP 5: Import the database now that the server is confirmed to be running.
     message "✅ MariaDB is running. Proceeding with database setup."
-    podman exec "${SITE_NAME}" bash /var/www/box import_db
     podman exec "${SITE_NAME}" ln -sf /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
+    podman exec "${SITE_NAME}" bash /var/www/box import_db
 
     # STEP 6: Manually start the Apache service:
     message "Starting Apache service..."
@@ -954,7 +983,7 @@ if [ "$ACTION" == "mail" ]; then
   get_state
 
   if [ $STATE -eq 0 ]; then
-    podman exec -it --user root "${SITE_NAME}" mutt
+    podman exec -it "${SITE_NAME}" bash /var/www/box mutt
     echo "" && exit >/dev/null 2>&1
   else
     no_box_running_message
@@ -983,8 +1012,9 @@ fi
 
 # emergency reset
 if [ $ACTION == "reset" ]; then
+  podman images 2>/dev/null
   echo ""
-  echo "WARNING! This will destroy the base image (${IMAGE}) and this project's container."
+  echo "WARNING! This will destroy all images listed above and their associated containers."
   accept_reset=false
   while true; do
     read -p "Do you wish to continue? (y/n): " yn
@@ -1000,95 +1030,18 @@ if [ $ACTION == "reset" ]; then
 
   if $accept_reset -eq true; then
     get_state
-    if [ $STATE -eq 0 ]; then
-      message "Stopping container..."
-      systemctl --user stop "container-${SITE_NAME}.service" >/dev/null 2>&1
-    fi
-    podman rmi "${IMAGE}" --force 2>/dev/null
-    message "Pulling the latest base image..."
-    podman pull "${IMAGE}"
+    clean_lamp_container
+    clean_container_directory
+    podman system prune --all --force
+    podman rmi --all --force
     echo ""
-    message "Reset complete."
+    echo "You may need to manually clean any other deployments of this script"
+    echo "with 'bash box destroy', or manually remove the .container directory."
     echo ""
-    echo "IMPORTANT: To use the new base image, run 'bash box rebuild' in each"
-    echo "project directory. Your database and site files will be preserved."
+    message "Everything has been reset"
   else
     message "nothing happened"
   fi
-  echo "" && exit >/dev/null 2>&1
-fi
-
-# Rebuild site image with fresh base (preserves data)
-if [ "$ACTION" == "rebuild" ]; then
-  get_state
-
-  if [ $STATE -eq 6 ]; then
-    message "Nothing to rebuild. Run 'bash box up' first to create a project."
-    exit 1
-  fi
-
-  if [ ! -d "${SITE_HOME}/.container" ]; then
-    message "No .container directory found. Run 'bash box up' first."
-    exit 1
-  fi
-
-  message "Rebuilding ${SITE_NAME} with fresh base image..."
-  message "Your database and site files will be preserved."
-
-  # Stop container if running
-  if [ $STATE -eq 0 ]; then
-    message "Stopping container..."
-    systemctl --user stop "container-${SITE_NAME}.service" >/dev/null 2>&1
-    podman stop "${SITE_NAME}" >/dev/null 2>&1
-  fi
-
-  # Remove container if exists
-  if podman container exists $SITE_NAME; then
-    podman rm $SITE_NAME >/dev/null 2>&1
-  fi
-
-  # Remove site image
-  if podman image exists "localhost/${SITE_NAME}:private"; then
-    message "Removing old site image..."
-    podman rmi "localhost/${SITE_NAME}:private" >/dev/null 2>&1
-  fi
-
-  # Remove systemd service file
-  if [ -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service" ]; then
-    rm -f "${HOME}/.config/systemd/user/container-${SITE_NAME}.service"
-    systemctl --user daemon-reload
-    sleep 2
-  fi
-
-  # Rebuild image
-  build_image
-
-  # Setup and start service
-  setup_systemd_service
-  start_systemd_service
-
-  # Start services (init.lock exists, so this is the restart path)
-  get_state
-  if [ $STATE -eq 0 ]; then
-    sleep 5
-    message "Loading services..."
-    podman exec --user root "${SITE_NAME}" bash -c "rm -f /var/spool/postfix/maildrop/* 2>/dev/null; /usr/sbin/postfix start"
-    podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch "${SITE_NAME}" bash -c 'ES_JAVA_OPTS="-Djava.locale.providers=CLDR" /usr/share/elasticsearch/bin/elasticsearch -d'
-    message "Starting mariadb..."
-    podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
-    _timeout=0
-    while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
-      sleep 2
-      let "_timeout+=1"
-    done
-    podman exec "${SITE_NAME}" ln -sf /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
-    message "Starting apache..."
-    podman exec "${SITE_NAME}" /usr/sbin/apache2ctl -k start
-  fi
-
-  echo ""
-  message "Rebuild complete! ${SITE_NAME} is now running with the fresh base image."
   echo "" && exit >/dev/null 2>&1
 fi
 
