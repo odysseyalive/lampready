@@ -319,10 +319,9 @@ function build_image {
   echo "RUN echo 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf" >>$_file
   echo "RUN echo 'Acquire::ForceIPv4 \"true\";' > /etc/apt/apt.conf.d/99force-ipv4" >>$_file
 
-  echo "RUN apt-get update -y --fix-missing" >>$_file
-  echo "RUN apt-get install -y ${_tools}" >>$_file
+  echo "RUN apt-get update -y --fix-missing && apt-get install -y ${_tools}" >>$_file
   echo "RUN ${_php_repo}" >>$_file
-  echo "RUN apt-get install -y ${_apache} ${_mariadb} ${_php}" >>$_file
+  echo "RUN apt-get update -y && apt-get install -y ${_apache} ${_mariadb} ${_php}" >>$_file
   echo "RUN apt-get install -y postfix" >>$_file
   echo "RUN ${_openssl}" >>$_file
 
