@@ -814,7 +814,7 @@ if [ "$ACTION" == "up" ]; then
     message "Loading Services..."
     podman exec "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
     message "Starting mariadb..."
     podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
     while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
@@ -869,7 +869,7 @@ if [ "$ACTION" == "up" ]; then
     message "Loading Services"
     podman exec "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
 
     # STEP 5: Import the database now that the server is confirmed to be running.
     message "✅ MariaDB is running. Proceeding with database setup."
