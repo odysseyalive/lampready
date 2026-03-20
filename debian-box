@@ -425,6 +425,7 @@ function display_help {
   echo "bash box ps          list running containers"
   echo "bash box reset       the emergency panic button - see notes below"
   echo "bash box ssh         enter the container commandline"
+  echo "bash box update      update box script (preserves your config)"
   echo ""
   echo "ENHANCED SECURITY FEATURES:"
   echo "This script now uses proper user mapping instead of running Apache as root."
@@ -1055,6 +1056,38 @@ if [ "$ACTION" == "ssh" ]; then
   else
     no_box_running_message
   fi
+  exit
+fi
+
+# Update box script from GitHub, preserving user config
+if [ "$ACTION" == "update" ]; then
+  SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+  DELIMITER="## # # # # # # # # # # # # # # # # # # # # # # # # # # #"
+  REMOTE_URL="https://raw.githubusercontent.com/odysseyalive/lampready/refs/heads/master/debian-box"
+
+  message "Downloading latest version..."
+  REMOTE_SCRIPT=$(curl -fsSL "$REMOTE_URL") || {
+    message "Failed to download update from GitHub."
+    exit 1
+  }
+
+  # Extract the code portion (at and below the delimiter) from the remote script
+  REMOTE_BODY=$(echo "$REMOTE_SCRIPT" | sed -n "/^${DELIMITER//\//\\/}/,\$p")
+  if [ -z "$REMOTE_BODY" ]; then
+    message "Failed to find delimiter in remote script. Aborting."
+    exit 1
+  fi
+
+  # Extract the user's config header (everything above the delimiter) from the local script
+  LOCAL_HEADER=$(sed "/^${DELIMITER//\//\\/}/,\$d" "$SCRIPT_PATH")
+  if [ -z "$LOCAL_HEADER" ]; then
+    message "Failed to find delimiter in local script. Aborting."
+    exit 1
+  fi
+
+  # Combine local header with remote body
+  printf '%s\n%s\n' "$LOCAL_HEADER" "$REMOTE_BODY" > "$SCRIPT_PATH"
+  message "Update complete. Your configuration has been preserved."
   exit
 fi
 
