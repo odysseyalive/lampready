@@ -21,9 +21,6 @@ START_ON_SYSTEM_BOOT="0"
 HTTP_PORT="80"
 SSL_PORT="443"
 
-# Toggle Elasticsearch 7.x (installed at build, started at boot). Default: off.
-ENABLE_ELASTICSEARCH="0"
-
 TIMEZONE="America/Los_Angeles"
 
 PHP_VERSION="8.3" # 7.4, 8.0, 8.1, 8.2, or 8.3
@@ -67,6 +64,7 @@ ACTION="${1:-help}"
 if [ "$SUB_DOMAIN" != "" ]; then SITE_NAME="${SUB_DOMAIN}.${HOSTNAME}"; else SITE_NAME=$HOSTNAME; fi
 MULTI_BOX=0
 USE_TMPFS=0
+ENABLE_ELASTICSEARCH=0
 USE_EXTRAS=1
 
 # Get host user information for proper mapping
@@ -1095,7 +1093,7 @@ if [ "$ACTION" == "update" ]; then
   fi
 
   # Combine local header with remote body
-  printf '%s\n%s\n' "$LOCAL_HEADER" "$REMOTE_BODY" > "$SCRIPT_PATH"
+  printf '%s\n%s\n' "$LOCAL_HEADER" "$REMOTE_BODY" >"$SCRIPT_PATH"
   message "Update complete. Your configuration has been preserved."
   exit
 fi
