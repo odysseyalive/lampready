@@ -21,6 +21,9 @@ START_ON_SYSTEM_BOOT="0"
 HTTP_PORT="80"
 SSL_PORT="443"
 
+# Toggle Elasticsearch 7.x (installed at build, started at boot). Default: off.
+ENABLE_ELASTICSEARCH="0"
+
 TIMEZONE="America/Los_Angeles"
 
 PHP_VERSION="8.3" # 7.4, 8.0, 8.1, 8.2, or 8.3
@@ -331,7 +334,9 @@ function build_image {
   echo "RUN ${_php_config}" >>$_file
   echo "RUN ${_xdebug_config}" >>$_file
   echo "RUN ${_postfix_config}" >>$_file
-  echo "RUN ${_elasticsearch}" >>$_file
+  if [ "$ENABLE_ELASTICSEARCH" = "1" ]; then
+    echo "RUN ${_elasticsearch}" >>$_file
+  fi
 
   # Sodium is included by default in modern PHP versions on Debian, no separate package needed
 
@@ -815,7 +820,9 @@ if [ "$ACTION" == "up" ]; then
     message "Loading Services..."
     podman exec "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    if [ "$ENABLE_ELASTICSEARCH" = "1" ]; then
+      podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    fi
     message "Starting mariadb..."
     podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
     while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
@@ -870,7 +877,9 @@ if [ "$ACTION" == "up" ]; then
     message "Loading Services"
     podman exec "${SITE_NAME}" /usr/sbin/postfix start
     podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    if [ "$ENABLE_ELASTICSEARCH" = "1" ]; then
+      podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+    fi
 
     # STEP 5: Import the database now that the server is confirmed to be running.
     message "✅ MariaDB is running. Proceeding with database setup."
