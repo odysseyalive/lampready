@@ -248,6 +248,9 @@ function build_image {
     sed -i \"s@^socket@#socket@g\" /etc/mysql/mariadb.conf.d/50-server.cnf && \
     printf \"\n[client-server]\nsocket=/var/lib/mysql/mysql.sock\n\" >> /etc/mysql/mariadb.conf.d/50-server.cnf && \
     sed -i \"/^\\[mysqld\\]/a socket=/var/lib/mysql/mysql.sock\\ntmpdir=/tmp\\nlc-messages-dir=/usr/share/mysql\\nskip-external-locking\\nquery_cache_limit=1G\\nquery_cache_size=16M\\ninnodb_file_per_table=1\\ninnodb_strict_mode=0\\nsql_mode=''\\ninnodb_large_prefix=1\\ninnodb_log_file_size=256M\\ntmp_table_size=256MB\\nmax_heap_table_size=256MB\\nslow_query_log = 1\\nslow_query_log_file = /var/log/apache2/mariadb-slow.log\\nlong_query_time = 2\\nlog_error=/var/log/apache2/mariadb.log\\nuser=${CONTAINER_USER}\" /etc/mysql/mariadb.conf.d/50-server.cnf && \
+    sed -i \"s@^syslog@#syslog@; s@^skip_log_error@#skip_log_error@\" /etc/mysql/mariadb.conf.d/50-mysqld_safe.cnf && \
+    ln -sf /dev/null /etc/systemd/system/mariadb.socket && \
+    rm -f /etc/systemd/system/sockets.target.wants/mariadb.socket && \
     sed -i \"s@^User=mysql@User=${CONTAINER_USER}@g\" /usr/lib/systemd/system/mariadb.service && \
     sed -i \"s@^Group=mysql@Group=${CONTAINER_USER}@g\" /usr/lib/systemd/system/mariadb.service && \
     sed -i \"s@/usr/sbin/mysqld@/usr/sbin/mysqld --user=${CONTAINER_USER}@g\" /usr/lib/systemd/system/mariadb.service; \
@@ -286,7 +289,7 @@ function build_image {
         sed -i \"s@max_input_vars.*@max_input_vars=10000@g\" /etc/php/${PHP_VERSION}/apache2/php.ini; \
         sed -i \"s@post_max_size.*@post_max_size=16M@g\" /etc/php/${PHP_VERSION}/apache2/php.ini; \
         sed -i \"s@upload_max_filesize.*@upload_max_filesize=16M@g\" /etc/php/${PHP_VERSION}/apache2/php.ini; \
-        sed -i \"s@session.gc_maxlifetime.*@session.gc_maxlifetime=43200\" /etc/php/${PHP_VERSION}/apache2/php.ini; \
+        sed -i \"s@session.gc_maxlifetime.*@session.gc_maxlifetime=43200@g\" /etc/php/${PHP_VERSION}/apache2/php.ini; \
         sed -i \"s@short_open_tag.*@short_open_tag=On@g\" /etc/php/${PHP_VERSION}/cli/php.ini; \
         sed -i \"s@max_execution_time.*@max_execution_time=${PHP_MAX_EXEC_TIME}@g\" /etc/php/${PHP_VERSION}/cli/php.ini; \
         sed -i \"s@max_input_vars.*@max_input_vars=10000@g\" /etc/php/${PHP_VERSION}/cli/php.ini; \
@@ -674,6 +677,31 @@ function no_box_running_message {
   message "Run 'bash box up' to start it"
 }
 
+# launch mariadb inside the container
+#
+# --skip-syslog is required: Debian's 50-mysqld_safe.cnf turns on syslog logging,
+# which makes mysqld_safe pipe mariadbd through 'logger'. There is no syslog
+# listener in this container, so logger exits immediately and mariadbd dies of
+# SIGPIPE before it can write a single line to its error log.
+# The explicit --log-error keeps output in the file we tail on failure, and the
+# redirect captures mysqld_safe's own errors, which podman exec -d discards.
+function start_mariadb {
+  podman exec -d "${SITE_NAME}" bash -c \
+    "/usr/bin/mysqld_safe --user=${CONTAINER_USER} --skip-syslog \
+       --log-error=/var/log/apache2/mariadb.log \
+       >>/var/log/apache2/mysqld_safe.out 2>&1"
+}
+
+# report a failed mariadb start with whatever logs we can find
+function mariadb_start_failure {
+  message "❌ MariaDB manual start failed. Check container logs: podman logs ${SITE_NAME}"
+  message "Displaying last 20 lines of the MariaDB log from within the container:"
+  podman exec "${SITE_NAME}" tail -n 20 /var/log/apache2/mariadb.log
+  message "Displaying last 20 lines of the mysqld_safe wrapper log:"
+  podman exec "${SITE_NAME}" tail -n 20 /var/log/apache2/mysqld_safe.out 2>/dev/null
+  exit 1
+}
+
 # setup local systemd service
 function setup_systemd_service {
   message "Setting up systemd service directly..."
@@ -822,17 +850,15 @@ if [ "$ACTION" == "up" ]; then
       podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
     fi
     message "Starting mariadb..."
-    podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
+    start_mariadb
+    _timeout=0
     while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
       sleep 2
       let "_timeout+=1"
     done
     # If the socket still doesn't exist, fail with a clear error.
     if ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ]; then
-      message "❌ MariaDB manual start failed. Check container logs: podman logs ${SITE_NAME}"
-      message "Displaying last 20 lines of the MariaDB log from within the container:"
-      podman exec "${SITE_NAME}" tail -n 20 /var/log/apache2/mariadb.log
-      exit 1
+      mariadb_start_failure
     fi
     podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
     message "Starting apache..."
@@ -854,7 +880,7 @@ if [ "$ACTION" == "up" ]; then
     podman exec "${SITE_NAME}" mysql_install_db --user=${CONTAINER_USER} --basedir=/usr --datadir=/var/lib/mysql
 
     message "Starting MariaDB server manually for setup..."
-    podman exec -d "${SITE_NAME}" /usr/bin/mysqld_safe --user=${CONTAINER_USER}
+    start_mariadb
 
     message "Waiting for MariaDB socket to become available..."
     _timeout=0
@@ -865,10 +891,7 @@ if [ "$ACTION" == "up" ]; then
 
     # If the socket still doesn't exist, fail with a clear error.
     if ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ]; then
-      message "❌ MariaDB manual start failed. Check container logs: podman logs ${SITE_NAME}"
-      message "Displaying last 20 lines of the MariaDB log from within the container:"
-      podman exec "${SITE_NAME}" tail -n 20 /var/log/apache2/mariadb.log
-      exit 1
+      mariadb_start_failure
     fi
 
     # STEP 4: Auxillary Services
