@@ -1,5 +1,14 @@
 CLAUDE.md
-.claude/
+# Local AI tooling stays untracked, except the awareness ledger, which is
+# project memory and should travel with the repo. Git will not descend into an
+# excluded directory, so each parent has to be re-included explicitly.
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/awareness-ledger/
+.claude/skills/awareness-ledger/*
+!.claude/skills/awareness-ledger/ledger/
 .container
 public_html
 box
+.claude-backups/
