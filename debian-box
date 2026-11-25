@@ -551,14 +551,29 @@ function display_help {
 
 function export_databases {
   # export database
+  # dumps run as the exec user (unix_socket auth, like import_databases);
+  # 'mysqldump -u root' is refused there and used to leave an empty file
+  local _failed=0
   for ((i = 1; i < 50; i++)); do
     if set | grep "^DB$i" >/dev/null 2>&1; then
       declare -n var="DB$i"
       if [ "${var[DB_NAME]}" != "" ]; then
-        mysqldump -u root --single-transaction --quick --lock-tables=false --skip-tz-utc ${var[DB_NAME]} | gzip -9 >"/var/www/${var[DB_NAME]}.sql.gz"
+        local _out="/var/www/${var[DB_NAME]}.sql.gz"
+        local _tmp="${_out}.partial"
+        # write to a temp file so a failed dump never replaces a good backup
+        if (set -o pipefail; mysqldump --single-transaction --quick --lock-tables=false --skip-tz-utc "${var[DB_NAME]}" | gzip -9 >"$_tmp") &&
+          zcat "$_tmp" | tail -n 1 | grep -q '^-- Dump completed'; then
+          mv -f "$_tmp" "$_out"
+          message "Exported ${var[DB_NAME]} to ${var[DB_NAME]}.sql.gz"
+        else
+          rm -f "$_tmp"
+          message "❌ ERROR: Export of ${var[DB_NAME]} failed; any previous ${var[DB_NAME]}.sql.gz was left as it was."
+          _failed=1
+        fi
       fi
     fi
   done
+  return $_failed
 }
 
 # import databases
@@ -1137,7 +1152,10 @@ if [ "$ACTION" == "export" ]; then
   if [ $STATE -eq 0 ]; then
     message "Exporting databases"
     message "Depending on the size of the database(s), this could take some time..."
-    podman exec "${SITE_NAME}" bash /var/www/box export_db
+    if ! podman exec "${SITE_NAME}" bash /var/www/box export_db; then
+      message "❌ ERROR: Export failed. Do not rebuild or destroy until you have a good backup."
+      exit 1
+    fi
     message "Export complete.  Check for *.gz files in ${SITE_HOME}"
     echo "" && exit >/dev/null 2>&1
   else
@@ -1329,7 +1347,7 @@ fi
 # container environment.
 # export db
 if [ "$ACTION" == "export_db" ]; then
-  export_databases
+  export_databases || exit 1
   message "Export complete"
   exit
 fi
