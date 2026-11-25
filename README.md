@@ -226,9 +226,24 @@ operations.  This makes for a more efficient environment for testing
 scripts.
 
 **XDEBUG_ENABLE:**
-Xdebug is not enabled by default. Xdebug must be enabled before the initial
-setup process begins.  If Xdebug is not enabled during the first initialization
-of the LAMP stack, it will have to be destroyed and recreated.
+Xdebug is off by default (`xdebug.mode=off`). Set this to 1 to start new boxes
+with Xdebug on. When on, Xdebug uses XDEBUG_MODE and only starts for requests
+that carry the `XDEBUG_TRIGGER` or `XDEBUG_SESSION` trigger (for example from a
+browser debug extension), and it only logs errors. After the first
+***bash box up***, turn it on or off at any time without a rebuild:
+
+```
+bash box xdebug on
+bash box xdebug off
+bash box xdebug status
+```
+
+The setting is kept in `.container/php/99-xdebug-local.ini` and survives
+***halt***, ***up*** and ***rebuild***.
+
+**XDEBUG_MODE:**
+The Xdebug mode used when Xdebug is on. Defaults to `debug`. Other examples:
+`develop,debug` or `profile`.
 
 **XDEBUG_PORT:**
 This is the default port normally allocated for Xdebug.  You'll want to be sure
@@ -302,6 +317,12 @@ Enhanced permission management allows you to specify the user account that will 
 services inside the container. By default, the container will map to your host user
 for seamless file sharing.
 
+**CONTAINER_CPUS:**
+The maximum number of CPU cores the container may use. Defaults to 2. Leave it
+empty for no limit. Changes apply after ***bash box rebuild***. Rootless
+containers can only be limited when systemd delegates the cpu controller to your
+user; if it doesn't, the box prints a warning and runs without the limit.
+
 How to Use this Box?
 ---
 
@@ -325,8 +346,10 @@ bash box halt
 bash box destroy
 ```
 
-**Note:** If you run bash box destroy, the box will be built from scratch again
--- which may be a good thing.
+**Note:** destroy deletes all of `.container`, including your databases, logs
+and `.container/sites-enabled`. Only `public_html` and the `.sql` files in the
+project root survive. Run ***bash box export*** first if you need the data, or
+use ***bash box rebuild*** to rebuild while keeping it.
 
 **to shell into the server:**
 
@@ -340,13 +363,13 @@ bash box ssh
 bash box ps 
 ```
 
-**pull a fresh base image:**
+**turn Xdebug on or off:**
 
 ```
-bash box reset
+bash box xdebug on|off|status
 ```
 
-**rebuild site with fresh base image (preserves data):**
+**rebuild the site image and container (preserves data):**
 
 ```
 bash box rebuild
@@ -359,13 +382,15 @@ If an existing container fails to start after a system update or base image chan
 
 **Step 1: Pull the fresh base image**
 
-Run this once from any project directory:
+Run this once:
 
 ```
-bash box reset
+podman pull docker.io/jrei/systemd-debian:12
 ```
 
-This will download the latest `docker.io/jrei/systemd-debian:12` image without affecting your project files or database.
+This downloads the latest base image without affecting your project files or
+database. Do not use ***bash box reset*** for this: it removes every podman image
+and container and deletes this project's `.container` directory, databases included.
 
 **Step 2: Rebuild each project**
 
@@ -377,21 +402,21 @@ bash box rebuild
 ```
 
 The rebuild command will:
-* Stop the running container (if any)
-* Remove the old site image
-* Rebuild with the fresh base image
-* Start all services (Apache, MariaDB, etc.)
-* **Preserve your database, site files, and Apache configs**
+* Shut MariaDB down cleanly and stop the running container (if any)
+* Remove the old site image and service
+* Rebuild the image with the base image you have locally
+* Start all services (Apache, MariaDB, etc.) on the existing data
+* **Preserve your database, logs, site files, Apache configs and Xdebug setting**
 
 **Important Notes:**
-* `reset` only affects the base Debian image — your projects stay intact
-* `rebuild` recreates the site image but preserves all data in `.container/`
-* `destroy` wipes everything including your database — use with caution
+* `rebuild` recreates the site image but keeps `.container/mariadb`, `log`, `sites-enabled` and `php`
+* `destroy` wipes all of `.container`, including your database — use with caution
+* `reset` removes every podman image and container and this project's `.container`, database included
 
 **Typical workflow when things break:**
 
 ```
-bash box reset              # Pull fresh base image (run once)
+podman pull docker.io/jrei/systemd-debian:12   # Pull fresh base image (run once)
 cd /path/to/site1
 bash box rebuild            # Rebuild site1 with new base
 cd /path/to/site2

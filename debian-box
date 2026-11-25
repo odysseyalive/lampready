@@ -28,7 +28,8 @@ PHP_MAX_EXEC_TIME="600"
 PHP_MEM_LIMIT="512M"
 
 # Enhanced security configuration
-XDEBUG_ENABLE="0"
+XDEBUG_ENABLE="0"   # starting state; toggle later with: bash box xdebug on|off
+XDEBUG_MODE="debug" # mode used when Xdebug is on, e.g. debug, develop,debug or profile
 XDEBUG_PORT="9003"
 XDEBUG_FORCE_DISPLAY_ERRORS="1"
 XDEBUG_SCREAM="0"
@@ -40,6 +41,9 @@ XDEBUG_DISPLAY_MAX_CHILDREN="128"
 CONTAINER_USER="webuser"
 CONTAINER_UID="1000"
 CONTAINER_GID="1000"
+
+# Resource limits
+CONTAINER_CPUS="2" # max CPU cores the container may use; leave empty for no limit
 
 declare -A DB1=(
   [DB_NAME]=""
@@ -66,6 +70,14 @@ MULTI_BOX=0
 USE_TMPFS=0
 ENABLE_ELASTICSEARCH=0
 USE_EXTRAS=1
+
+# Defaults for settings that older config headers may not have
+XDEBUG_ENABLE="${XDEBUG_ENABLE:-0}"
+XDEBUG_MODE="${XDEBUG_MODE:-debug}"
+CONTAINER_CPUS="${CONTAINER_CPUS-2}"
+
+# Xdebug override, bind-mounted into the container so it survives recreation
+XDEBUG_INI="${SITE_HOME}/.container/php/99-xdebug-local.ini"
 
 # Get host user information for proper mapping
 HOST_UID=$(id -u)
@@ -307,7 +319,9 @@ function build_image {
         printf \"/.+@.+/ root\" > /etc/postfix/virtual-regexp; \
         "
 
-  _xdebug_config="printf \"xdebug.mode=develop,debug\nxdebug.start_with_request=yes\nxdebug.scream=${XDEBUG_SCREAM}\nxdebug.var_display_max_data=${XDEBUG_DISPLAY_MAX_DATA}\nxdebug.var_display_max_depth=${XDEBUG_DISPLAY_MAX_DEPTH}\nxdebug.var_display_max_children=${XDEBUG_DISPLAY_MAX_CHILDREN}\nxdebug.cli_color=1\nxdebug.log='/var/log/apache2/xdebug.log'\nxdebug.force_display_errors=${XDEBUG_FORCE_DISPLAY_ERRORS}\nxdebug.client_host=host.containers.internal\nxdebug.client_port=${XDEBUG_PORT}\" >> /etc/php/${PHP_VERSION}/apache2/conf.d/20-xdebug.ini; \
+  # xdebug only starts on a trigger (XDEBUG_TRIGGER / XDEBUG_SESSION); the mode set
+  # here is a fallback, since .container/php/99-xdebug-local.ini overrides it
+  _xdebug_config="printf \"xdebug.mode=$(xdebug_default_mode)\nxdebug.start_with_request=trigger\nxdebug.log_level=1\nxdebug.scream=${XDEBUG_SCREAM}\nxdebug.var_display_max_data=${XDEBUG_DISPLAY_MAX_DATA}\nxdebug.var_display_max_depth=${XDEBUG_DISPLAY_MAX_DEPTH}\nxdebug.var_display_max_children=${XDEBUG_DISPLAY_MAX_CHILDREN}\nxdebug.cli_color=1\nxdebug.log='/var/log/apache2/xdebug.log'\nxdebug.force_display_errors=${XDEBUG_FORCE_DISPLAY_ERRORS}\nxdebug.client_host=host.containers.internal\nxdebug.client_port=${XDEBUG_PORT}\" >> /etc/php/${PHP_VERSION}/apache2/conf.d/20-xdebug.ini; \
         "
 
   # build the image in docker style
@@ -429,9 +443,23 @@ function display_help {
   echo "bash box mail        view mail in mail trap"
   echo "bash box mysql       enter mysql prompt"
   echo "bash box ps          list running containers"
+  echo "bash box rebuild     rebuilds the image and container, keeping databases and logs"
   echo "bash box reset       the emergency panic button - see notes below"
   echo "bash box ssh         enter the container commandline"
   echo "bash box update      update box script (preserves your config)"
+  echo "bash box xdebug on|off|status"
+  echo "                     turns xdebug on or off without a rebuild"
+  echo ""
+  echo "XDEBUG:"
+  echo "Xdebug is off unless XDEBUG_ENABLE=\"1\" or 'bash box xdebug on' is used. When on,"
+  echo "it runs in XDEBUG_MODE and only starts for requests carrying the XDEBUG_TRIGGER"
+  echo "or XDEBUG_SESSION trigger, e.g. from a browser debug extension. The setting lives"
+  echo "in .container/php/99-xdebug-local.ini and survives halt, up and rebuild."
+  echo ""
+  echo "CPU LIMIT:"
+  echo "CONTAINER_CPUS caps the CPU cores the container may use. Changes take effect"
+  echo "after 'bash box rebuild'. It needs the cpu cgroup controller delegated to"
+  echo "your user; 'bash box up' prints a warning and skips the limit otherwise."
   echo ""
   echo "ENHANCED SECURITY FEATURES:"
   echo "This script now uses proper user mapping instead of running Apache as root."
@@ -488,11 +516,10 @@ function display_help {
   echo "ls -l .container/logs"
   echo ""
   echo "NOTE ABOUT DESTROYING CONTAINERS:"
-  echo "The destroy command will not delete some shared content. The following directories"
-  echo "will not be affected:"
-  echo ""
-  echo "${SITE_HOME}/.container/sites-enabled"
-  echo "${SITE_HOME}/${PUBLIC_ROOT_PATH}"
+  echo "The destroy command deletes all of ${SITE_HOME}/.container, including the"
+  echo "databases, logs and sites-enabled. Only ${SITE_HOME}/${PUBLIC_ROOT_PATH}"
+  echo "and the .sql files in ${SITE_HOME} survive. Use 'bash box export' first if"
+  echo "you need the data, or use 'bash box rebuild' to rebuild while keeping it."
   echo ""
   echo "WHY DO I USE THE RESET OPTION FOR?"
   echo "Don't confuse the reset option with the destroy command. Destroy wipes a project clean."
@@ -702,12 +729,137 @@ function mariadb_start_failure {
   exit 1
 }
 
+# the xdebug mode XDEBUG_ENABLE asks for
+function xdebug_default_mode {
+  if [ "$XDEBUG_ENABLE" = "1" ]; then
+    echo "$XDEBUG_MODE"
+  else
+    echo "off"
+  fi
+}
+
+# write the xdebug override file with the given mode
+# The file is rewritten in place (not replaced) so the bind mount, which
+# follows the inode, sees the change.
+function write_xdebug_ini {
+  mkdir -p "${SITE_HOME}/.container/php"
+  printf '; managed by: bash box xdebug on|off\nxdebug.mode=%s\nxdebug.start_with_request=trigger\nxdebug.log_level=1\n' "$1" >"$XDEBUG_INI"
+}
+
+# create the xdebug override from XDEBUG_ENABLE; an existing one is kept
+# because the state set by 'bash box xdebug' wins
+function ensure_xdebug_ini {
+  if [ ! -f "$XDEBUG_INI" ]; then
+    write_xdebug_ini "$(xdebug_default_mode)"
+  fi
+}
+
+# the xdebug mode currently set in the override file
+function xdebug_ini_mode {
+  sed -n 's@^xdebug.mode=@@p' "$XDEBUG_INI" 2>/dev/null
+}
+
+# containers created before 'bash box xdebug' existed don't mount the override
+function xdebug_ini_mounted {
+  podman inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$SITE_NAME" 2>/dev/null | grep -q "99-xdebug-local.ini"
+}
+
+# rootless containers can only be cpu limited when systemd delegates
+# the cpu controller to the user
+function cpu_controller_delegated {
+  grep -qw "cpu" "/sys/fs/cgroup/user.slice/user-${HOST_UID}.slice/user@${HOST_UID}.service/cgroup.controllers" 2>/dev/null
+}
+
+# user lingering is required for systemd user services
+function check_lingering {
+  if ! loginctl show-user "$(whoami)" | grep -q "Linger=yes"; then
+    message "❌ ERROR: User lingering is not enabled. Rootless containers managed by systemd require this."
+    echo "Please run the following command once to enable it:"
+    echo ""
+    echo "  sudo loginctl enable-linger $(whoami)"
+    echo ""
+    exit 1
+  fi
+}
+
+# start the services of an already initialized box
+function start_services {
+  sleep 5
+  message "Loading Services..."
+  podman exec "${SITE_NAME}" /usr/sbin/postfix start
+  podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
+  if [ "$ENABLE_ELASTICSEARCH" = "1" ]; then
+    podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
+  fi
+  message "Starting mariadb..."
+  start_mariadb
+  _timeout=0
+  while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
+    sleep 2
+    let "_timeout+=1"
+  done
+  # If the socket still doesn't exist, fail with a clear error.
+  if ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ]; then
+    mariadb_start_failure
+  fi
+  podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
+  message "Starting apache..."
+  podman exec "${SITE_NAME}" /usr/sbin/apache2ctl -k start
+}
+
+# the box is up
+function display_ready_message {
+  echo ""
+  echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+  echo "+                                                                 +"
+  echo "+  Your Enhanced Secure Debian LAMP is ready...                   +"
+  echo "+                                                                 +"
+  echo "+  Access via:                                                    +"
+  echo "+  HTTP:  http://${SITE_NAME}"
+  echo "+  HTTPS: https://${SITE_NAME}"
+  echo "+                                                                 +"
+  echo "+  Add to your hosts file:                                        +"
+  echo "+  127.0.0.1   ${SITE_NAME}"
+  echo "+                                                                 +"
+  echo "+  Xdebug port: ${XDEBUG_PORT}"
+  echo "+  Memcached port: 11211                                          +"
+  echo "+                                                                 +"
+  echo "+  All outbound mail is trapped and can be viewed with:           +"
+  echo "+  bash box mail                                                  +"
+  echo "+                                                                 +"
+  echo "+  See LAMPready.com for more information.                        +"
+  echo "+                                                                 +"
+  echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+  echo ""
+}
+
 # setup local systemd service
 function setup_systemd_service {
   message "Setting up systemd service directly..."
 
   # create directory if it doesn't exist
   mkdir -p "${HOME}/.config/systemd/user"
+
+  # the xdebug override must exist before it can be mounted
+  ensure_xdebug_ini
+
+  # cpu limit, set at create time because the service recreates the
+  # container from these options on every start
+  _cpu_opts=()
+  if [ "$CONTAINER_CPUS" != "" ]; then
+    if cpu_controller_delegated; then
+      _cpu_opts=(--cpus "$CONTAINER_CPUS")
+    else
+      message "⚠️  WARNING: CONTAINER_CPUS=${CONTAINER_CPUS} is ignored because the cpu cgroup controller is not delegated to your user."
+      echo "To enable it, run the following as root, then run 'bash box rebuild':"
+      echo ""
+      echo "  mkdir -p /etc/systemd/system/user@.service.d"
+      echo "  printf '[Service]\nDelegate=cpu cpuset io memory pids\n' > /etc/systemd/system/user@.service.d/delegate.conf"
+      echo "  systemctl daemon-reload"
+      echo ""
+      echo "A new login session may be needed before it takes effect."
+    fi
+  fi
 
   # stop and clean up any old container with the same name
   podman container exists "$SITE_NAME" && podman rm -f "$SITE_NAME"
@@ -726,6 +878,8 @@ function setup_systemd_service {
     --volume "${SITE_HOME}/.container/sites-enabled:/etc/apache2/sites-enabled:Z" \
     --volume "${SITE_HOME}/.container/log:/var/log/apache2:Z" \
     --volume "${SITE_HOME}/.container/mariadb:/var/lib/mysql:Z" \
+    --volume "${XDEBUG_INI}:/etc/php/${PHP_VERSION}/apache2/conf.d/99-xdebug-local.ini:Z" \
+    "${_cpu_opts[@]}" \
     --security-opt "no-new-privileges" \
     --cap-add "CHOWN,DAC_OVERRIDE,SETGID,SETUID,NET_BIND_SERVICE" \
     --userns=keep-id \
@@ -750,6 +904,10 @@ function setup_systemd_service {
 # start local systemd service
 function start_systemd_service {
   message "Starting enhanced secure services via systemd..."
+
+  # the service fails to start if a mounted file is missing
+  ensure_xdebug_ini
+
   systemctl --user daemon-reload
   sleep 2
 
@@ -776,14 +934,7 @@ fi
 # Download, build and start your LAMP with one commandline
 if [ "$ACTION" == "up" ]; then
   # NEW: Check for user lingering, which is required for systemd user services
-  if ! loginctl show-user "$(whoami)" | grep -q "Linger=yes"; then
-    message "❌ ERROR: User lingering is not enabled. Rootless containers managed by systemd require this."
-    echo "Please run the following command once to enable it:"
-    echo ""
-    echo "  sudo loginctl enable-linger $(whoami)"
-    echo ""
-    exit 1
-  fi
+  check_lingering
 
   # Check if required ports are available before proceeding
   check_ports
@@ -842,27 +993,7 @@ if [ "$ACTION" == "up" ]; then
 
   if [ $STATE -eq 0 ] && [ -f "${SITE_HOME}/.container/init.lock" ]; then
     # Startup Services
-    sleep 5
-    message "Loading Services..."
-    podman exec "${SITE_NAME}" /usr/sbin/postfix start
-    podman exec "${SITE_NAME}" /usr/bin/memcached -d -u ${CONTAINER_USER} -m 64 -p 11211
-    if [ "$ENABLE_ELASTICSEARCH" = "1" ]; then
-      podman exec --user elasticsearch -e ES_JAVA_OPTS="-Djava.locale.providers=CLDR" "${SITE_NAME}" /usr/share/elasticsearch/bin/elasticsearch -d
-    fi
-    message "Starting mariadb..."
-    start_mariadb
-    _timeout=0
-    while ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ] && [ $_timeout -lt 15 ]; do
-      sleep 2
-      let "_timeout+=1"
-    done
-    # If the socket still doesn't exist, fail with a clear error.
-    if ! podman exec "${SITE_NAME}" [ -S /var/lib/mysql/mysql.sock ]; then
-      mariadb_start_failure
-    fi
-    podman exec "${SITE_NAME}" ln -s /var/lib/mysql/mysql.sock /var/run/mysqld/mysqld.sock
-    message "Starting apache..."
-    podman exec "${SITE_NAME}" /usr/sbin/apache2ctl -k start
+    start_services
   fi
 
   # check if lamp has been initialized
@@ -919,31 +1050,57 @@ if [ "$ACTION" == "up" ]; then
 
   # ready to launch LAMP server
   if [ $STATE -eq 0 ]; then
-    echo ""
-    echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-    echo "+                                                                 +"
-    echo "+  Your Enhanced Secure Debian LAMP is ready...                   +"
-    echo "+                                                                 +"
-    echo "+  Access via:                                                    +"
-    echo "+  HTTP:  http://${SITE_NAME}"
-    echo "+  HTTPS: https://${SITE_NAME}"
-    echo "+                                                                 +"
-    echo "+  Add to your hosts file:                                        +"
-    echo "+  127.0.0.1   ${SITE_NAME}"
-    echo "+                                                                 +"
-    echo "+  Xdebug port: ${XDEBUG_PORT}"
-    echo "+  Memcached port: 11211                                          +"
-    echo "+                                                                 +"
-    echo "+  All outbound mail is trapped and can be viewed with:           +"
-    echo "+  bash box mail                                                  +"
-    echo "+                                                                 +"
-    echo "+  See LAMPready.com for more information.                        +"
-    echo "+                                                                 +"
-    echo "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-    echo ""
+    display_ready_message
     echo "" && exit >/dev/null 2>&1
   fi
   exit
+fi
+
+# Rebuilds the image and container while keeping the databases,
+# logs, sites-enabled, xdebug state and site files in place.
+if [ "$ACTION" == "rebuild" ]; then
+  check_lingering
+
+  # rebuild only makes sense for a box that has been initialized;
+  # without init.lock there is no database to keep
+  if [ ! -f "${SITE_HOME}/.container/init.lock" ]; then
+    message "There is no initialized box to rebuild. Use 'bash box up' instead."
+    exit 1
+  fi
+
+  get_state
+  if [ $STATE -eq 6 ]; then
+    message "❌ ERROR: podman is not installed."
+    exit 1
+  fi
+
+  message "Rebuilding ${SITE_NAME}. Databases, logs, sites-enabled, xdebug state and ${PUBLIC_ROOT_PATH} are kept."
+
+  # stopping the container kills mariadb outright, so shut it down cleanly first
+  if [ $STATE -eq 0 ]; then
+    message "Stopping mariadb..."
+    podman exec "${SITE_NAME}" mysqladmin shutdown || message "⚠️  MariaDB did not shut down cleanly; it will be stopped with the container."
+  fi
+
+  # stops the service and removes the container, image and service file,
+  # leaving .container alone
+  clean_lamp_container
+
+  check_ports
+  build_image
+  setup_systemd_service
+  start_systemd_service
+  get_state
+
+  if [ $STATE -eq 0 ]; then
+    # init.lock exists, so this starts the existing databases
+    # without running init or import_db over them
+    start_services
+    display_ready_message
+    echo "" && exit >/dev/null 2>&1
+  fi
+  message "❌ ERROR: The rebuilt service did not start. Check: systemctl --user status container-${SITE_NAME}.service"
+  exit 1
 fi
 
 # Halts the container, stopping all processes associated
@@ -1087,6 +1244,52 @@ if [ "$ACTION" == "ssh" ]; then
     no_box_running_message
   fi
   exit
+fi
+
+# Turn xdebug on or off without rebuilding
+if [ "$ACTION" == "xdebug" ]; then
+  if [ ! -d "${SITE_HOME}/.container" ]; then
+    message "Run 'bash box up' first. Until then, XDEBUG_ENABLE sets the starting state."
+    exit 1
+  fi
+
+  if [ "$2" == "on" ] || [ "$2" == "off" ]; then
+    if [ "$2" == "on" ]; then
+      write_xdebug_ini "$XDEBUG_MODE"
+    else
+      write_xdebug_ini "off"
+    fi
+    message "Xdebug mode set to $(xdebug_ini_mode)"
+
+    get_state
+    if [ $STATE -eq 0 ]; then
+      if xdebug_ini_mounted; then
+        podman exec "${SITE_NAME}" /usr/sbin/apachectl graceful
+        message "Apache reloaded."
+      else
+        message "⚠️  This container predates 'bash box xdebug'. Run 'bash box rebuild' once to apply it."
+      fi
+    else
+      message "The box is not running. The setting applies on the next 'bash box up'."
+    fi
+  elif [ "$2" == "status" ] || [ "$2" == "" ]; then
+    if [ -f "$XDEBUG_INI" ]; then
+      message "Xdebug mode: $(xdebug_ini_mode)"
+      if [ "$(xdebug_ini_mode)" != "off" ]; then
+        echo "Debugging starts only when a request carries the XDEBUG_TRIGGER or XDEBUG_SESSION trigger."
+      fi
+    else
+      message "Xdebug mode: $(xdebug_default_mode) (from XDEBUG_ENABLE, applied on the next 'bash box up')"
+    fi
+    get_state
+    if [ $STATE -eq 0 ] && ! xdebug_ini_mounted; then
+      message "⚠️  This container predates 'bash box xdebug'. Run 'bash box rebuild' once to apply it."
+    fi
+  else
+    message "Usage: bash box xdebug on|off|status"
+    exit 1
+  fi
+  echo "" && exit >/dev/null 2>&1
 fi
 
 # Update box script from GitHub, preserving user config
